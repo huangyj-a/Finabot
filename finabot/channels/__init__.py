@@ -1,6 +1,5 @@
 """Chat channels module with plugin architecture."""
 
-from finabot.channels.base import BaseChannel
-from finabot.channels.manager import ChannelManager
+from finabot.channels.base import CLIChannel
 
-__all__ = ["BaseChannel", "ChannelManager"]
+__all__ = ["CLIChannel"]

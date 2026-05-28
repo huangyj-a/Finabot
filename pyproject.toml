@@ -1,0 +1,19 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "finabot"
+version = "0.1.4.post5"
+dependencies = [
+    "typer>=0.9.0",
+    "python-dotenv>=1.0.0",
+]
+
+# 核心：把 finabot 注册成系统命令
+[project.scripts]
+finabot = "finabot.cli.commands:app"
+
+[tool.setuptools.packages.find]
+include = ["finabot*"]
+exclude = ["skills*", "tests*"]
