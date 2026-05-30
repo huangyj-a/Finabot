@@ -3,6 +3,10 @@ import operator
 
 from langchain_core.tools import tool
 
+from finabot.agents.analysts import market_analyst
+from finabot.agents.researchers import researchers
+from finabot.tools.akshare_tools import get_akshare_tools
+
 
 _ALLOWED_BINOPS = {
     ast.Add: operator.add,
@@ -49,4 +53,4 @@ def calculator(expression: str) -> str:
 
 
 def get_tools():
-    return [calculator]
+    return [calculator, market_analyst, researchers, *get_akshare_tools()]

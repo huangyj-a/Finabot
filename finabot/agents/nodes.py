@@ -20,12 +20,21 @@ _TOOL_CALL_TEXT_PATTERN = re.compile(
 )
 
 
+def _internal_normalize_tool_name(name) -> str:
+    if name is None:
+        return ""
+    return str(name).strip()
+
+
 def normalize_tool_call(call):
     """Convert LiteLLM/OpenAI tool-call objects to the LangChain ToolCall shape."""
     if isinstance(call, dict):
         if "function" in call:
             function = call.get("function") or {}
             raw_arguments = function.get("arguments", {})
+            tool_name = _internal_normalize_tool_name(function.get("name", ""))
+            if not tool_name:
+                return None
             if isinstance(raw_arguments, str):
                 try:
                     arguments = json.loads(raw_arguments) if raw_arguments else {}
@@ -34,12 +43,15 @@ def normalize_tool_call(call):
             else:
                 arguments = raw_arguments or {}
             return tool_call(
-                name=function.get("name", ""),
+                name=tool_name,
                 args=arguments,
                 id=call.get("id"),
             )
 
         raw_arguments = call.get("args", {})
+        tool_name = _internal_normalize_tool_name(call.get("name", ""))
+        if not tool_name:
+            return None
         if isinstance(raw_arguments, str):
             try:
                 arguments = json.loads(raw_arguments) if raw_arguments else {}
@@ -49,13 +61,16 @@ def normalize_tool_call(call):
             arguments = raw_arguments or {}
 
         return tool_call(
-            name=call.get("name", ""),
+            name=tool_name,
             args=arguments,
             id=call.get("id"),
         )
 
     function = getattr(call, "function", None)
     raw_arguments = getattr(function, "arguments", {})
+    tool_name = _internal_normalize_tool_name(getattr(function, "name", ""))
+    if not tool_name:
+        return None
     if isinstance(raw_arguments, str):
         try:
             arguments = json.loads(raw_arguments) if raw_arguments else {}
@@ -65,7 +80,7 @@ def normalize_tool_call(call):
         arguments = raw_arguments or {}
 
     return tool_call(
-        name=getattr(function, "name", ""),
+        name=tool_name,
         args=arguments,
         id=getattr(call, "id", None),
     )
@@ -91,22 +106,35 @@ def extract_tool_calls_from_content(content: str):
 
 
 def format_tools():
-    return [
-        {
-            "type": "function",
-            "function": {
-                "name": t.name,
-                "description": t.description,
-                "parameters": {
-                    "type": "object",
-                    "properties": {
-                        "expression": {"type": "string"}
-                    },
-                    "required": ["expression"]
-                }
+    formatted_tools = []
+
+    for t in tools:
+        args_schema = getattr(t, "args_schema", None)
+        if args_schema is not None and hasattr(args_schema, "model_json_schema"):
+            parameters = args_schema.model_json_schema()
+        elif args_schema is not None and hasattr(args_schema, "schema"):
+            parameters = args_schema.schema()
+        else:
+            parameters = {
+                "type": "object",
+                "properties": {
+                    "expression": {"type": "string"}
+                },
+                "required": ["expression"],
             }
-        } for t in tools
-    ]
+
+        formatted_tools.append(
+            {
+                "type": "function",
+                "function": {
+                    "name": t.name,
+                    "description": t.description,
+                    "parameters": parameters,
+                },
+            }
+        )
+
+    return formatted_tools
 
 
 async def call_llm_node(state: AgentState):
@@ -116,7 +144,7 @@ async def call_llm_node(state: AgentState):
     )
 
     raw_tool_calls = getattr(msg, "tool_calls", None) or []
-    tool_calls = [normalize_tool_call(call) for call in raw_tool_calls]
+    tool_calls = [call for call in (normalize_tool_call(call) for call in raw_tool_calls) if call is not None]
     content = getattr(msg, "content", "") or ""
 
     if not tool_calls:
@@ -137,8 +165,12 @@ async def call_tool_node(state: AgentState):
 
     for call in last.tool_calls:
         normalized_call = normalize_tool_call(call)
+        if normalized_call is None:
+            continue
         tool_name = normalized_call["name"]
-        t = next(x for x in tools if x.name == tool_name)
+        t = next((x for x in tools if x.name == tool_name), None)
+        if t is None:
+            continue
         res = await t.ainvoke(normalized_call["args"])
         tool_results.append(
             ToolMessage(
