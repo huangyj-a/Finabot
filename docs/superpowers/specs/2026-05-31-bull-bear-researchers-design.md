@@ -116,6 +116,11 @@ LangGraph automatically injects `config` parameter - no signature changes needed
 **finabot/agents/core.py**
 - Pass RunnableConfig with session_manager and session_key when invoking graph
 
+**finabot/agents/session.py**
+- Extend SessionManager to store arbitrary session state (not just messages)
+- Add methods: `get_state(session_key) -> dict`, `update_state(session_key, state: dict)`
+- Store state alongside messages: `self.session_states: Dict[str, dict] = {}`
+
 ## Data Flow
 
 ### Initialization (Agent.process)
@@ -149,7 +154,7 @@ LangGraph automatically injects `config` parameter - no signature changes needed
    ```python
    session_manager = config["configurable"]["session_manager"]
    session_key = config["configurable"]["session_key"]
-   session_state = session_manager.get_session(session_key)
+   session_state = session_manager.get_state(session_key)
    ```
 4. Initialize or retrieve debate_context:
    ```python
@@ -183,7 +188,7 @@ LangGraph automatically injects `config` parameter - no signature changes needed
    debate_context["last_speaker"] = "bull"
    debate_context["in_progress"] = None
    session_state["debate_context"] = debate_context
-   session_manager.update_session(session_key, session_state)
+   session_manager.update_state(session_key, session_state)
    ```
 9. Return response string as ToolMessage
 
@@ -298,7 +303,7 @@ if in_progress and in_progress != "bull":  # For bull_researcher
 # Set lock
 debate_context["in_progress"] = "bull"
 session_state["debate_context"] = debate_context
-session_manager.update_session(session_key, session_state)
+session_manager.update_state(session_key, session_state)
 
 try:
     # ... execute researcher logic ...
@@ -306,7 +311,7 @@ finally:
     # Release lock
     debate_context["in_progress"] = None
     session_state["debate_context"] = debate_context
-    session_manager.update_session(session_key, session_state)
+    session_manager.update_state(session_key, session_state)
 ```
 
 ### Other Error Handling
@@ -412,6 +417,7 @@ Add debate history visualization:
 
 ## Implementation Checklist
 
+- [ ] Extend `finabot/agents/session.py` SessionManager with state storage
 - [ ] Create `finabot/agents/researchers/bull_researcher.py`
 - [ ] Create `finabot/agents/researchers/bear_researcher.py`
 - [ ] Update `finabot/agents/researchers/__init__.py` exports
