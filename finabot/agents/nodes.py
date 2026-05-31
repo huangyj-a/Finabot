@@ -140,7 +140,8 @@ def format_tools():
 async def call_llm_node(state: AgentState):
     msg = await litellm_glm_call(
         messages=state["messages"],
-        tools=format_tools()
+        tools=format_tools(),
+        memories=state.get("memories")
     )
 
     raw_tool_calls = getattr(msg, "tool_calls", None) or []

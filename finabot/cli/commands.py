@@ -17,15 +17,24 @@ app = typer.Typer(
 def start(
     message: str = typer.Option(None, "--message", "-m", help="Message to send to the agent"),
     session_id: str = typer.Option("cli:direct", "--session", "-s", help="Session ID"),
+    heartbeat_interval: float = typer.Option(30.0, "--heartbeat-interval", help="Heartbeat write interval in seconds"),
+    maintenance_interval: float = typer.Option(300.0, "--maintenance-interval", help="Maintenance task interval in seconds"),
 ):
     """Start Finabot AI Assistant"""
     from finabot.agents.core import Agent
     from finabot.bus.queue import MessageBus
     from finabot.bus.events import InboundMessage
+    from finabot.runtime import RuntimeService
 
     load_dotenv()
     bus = MessageBus()
     agent = Agent(bus)
+    runtime = RuntimeService(
+        agent,
+        bus,
+        heartbeat_interval_seconds=heartbeat_interval,
+        maintenance_interval_seconds=maintenance_interval,
+    )
 
     if ":" in session_id:
         channel_name, chat_id = session_id.split(":", 1)
@@ -69,6 +78,7 @@ def start(
     try:
         if message:
             async def run_once():
+                await runtime.start()
                 agent_task = asyncio.create_task(agent.run())
                 try:
                     await send_message(message)
@@ -77,10 +87,12 @@ def start(
                     agent_task.cancel()
                     with suppress(asyncio.CancelledError):
                         await agent_task
+                    await runtime.stop()
 
             asyncio.run(run_once())
         else:
             async def run_interactive():
+                await runtime.start()
                 agent_task = asyncio.create_task(agent.run())
                 try:
                     await input_loop()
@@ -88,6 +100,7 @@ def start(
                     agent_task.cancel()
                     with suppress(asyncio.CancelledError):
                         await agent_task
+                    await runtime.stop()
             asyncio.run(run_interactive())
     except KeyboardInterrupt:
         typer.echo("\n👋 Goodbye!")

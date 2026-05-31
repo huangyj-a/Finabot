@@ -8,10 +8,14 @@ flowchart TD
     C --> B1[MessageBus InboundQueue]
     B1 --> A[Agent.run]
     A --> G[LangGraph]
-    G --> L[LLM Node]
-    L -->|tool call| T[Tool Node]
-    T --> L
-    L --> F[Final Message]
+  G --> S[Supervisor Node]
+  S -->|market_analyst| M[Market Analyst Node]
+  S -->|researchers| R[Researchers Node]
+  S -->|tool call| T[Tool Node]
+  M --> S
+  R --> S
+  T --> S
+  S --> F[Final Message]
     F --> B2[MessageBus OutboundQueue]
     B2 --> C
     C --> O[Print Assistant Response]
@@ -57,10 +61,12 @@ flowchart TD
 
 - Builds the LangGraph state machine.
 - Current flow is:
-  - `llm` node
+  - `supervisor` node
+  - `market_analyst` node
+  - `researchers` node
   - `tool` node
-  - conditional edge back to `llm`
-- Graph ends when the LLM returns no tool calls.
+  - conditional edge back to `supervisor`
+- Graph ends when the supervisor returns no tool calls.
 
 ### `finabot.agents.nodes`
 
@@ -92,8 +98,8 @@ flowchart TD
 3. `Agent.run()` consumes the inbound message.
 4. Agent loads or creates session state.
 5. LangGraph runs the LLM node.
-6. If the LLM requests a tool, the tool node runs the tool.
-7. The graph loops back to the LLM node with tool results.
+6. If the supervisor requests a sub-agent, the corresponding node runs and returns to the supervisor.
+7. If the supervisor requests a tool, the tool node runs the tool and returns to the supervisor.
 8. When the LLM produces a final answer, the agent publishes `OutboundMessage`.
 9. CLI consumes the outbound message and prints it.
 
@@ -115,4 +121,4 @@ You can extend this framework in three main directions:
 
 ## 7. Suggested Next Step
 
-If you want the current architecture to evolve into a `Supervisor -> Market Agent / Research Agent -> Final Answer` design, the next refactor point is the LangGraph layer in `finabot/graph/graph.py`.
+The graph layer in `finabot/graph/graph.py` now follows a `Supervisor -> Market Analyst / Researchers / Tool -> Supervisor` design and can be extended with more analyst nodes in the same pattern.

@@ -303,6 +303,16 @@ def _internal_history_metrics(history_df):
         "high": max(closes),
         "low": min(closes),
     }
+    if date_column is not None:
+        latest_trade_date = str(frame.iloc[-1][date_column])
+        metrics["latest_trade_date"] = latest_trade_date
+        try:
+            parsed_trade_date = datetime.strptime(re.sub(r"[^0-9]", "", latest_trade_date)[:8], "%Y%m%d")
+            metrics["data_lag_days"] = (datetime.now() - parsed_trade_date).days
+            metrics["is_stale"] = metrics["data_lag_days"] > 7
+        except Exception:
+            metrics["data_lag_days"] = None
+            metrics["is_stale"] = None
 
     def _internal_return(period: int) -> float | None:
         if len(closes) <= period:
@@ -365,6 +375,9 @@ def _internal_build_hold_conclusion(metrics, info_payload, snapshot_payload):
         confidence = "low"
 
     evidence = []
+    latest_trade_date = metrics.get("latest_trade_date")
+    if latest_trade_date is not None:
+        evidence.append(f"行情最后交易日: {latest_trade_date}")
     latest_close = metrics.get("latest_close")
     if latest_close is not None:
         evidence.append(f"最新收盘价: {latest_close}")
@@ -556,6 +569,7 @@ def stock_a_snapshot(symbol_or_name: str, history_days: int = 120, top_n: int = 
         spot_payload = {"tool": "stock_a_spot", "error": str(exc)}
 
     history_payload = None
+    history_metrics = {}
     try:
         history_df = _internal_fetch_a_history_df(
             symbol=resolved_symbol,
@@ -565,8 +579,10 @@ def stock_a_snapshot(symbol_or_name: str, history_days: int = 120, top_n: int = 
             adjust="",
         )
         history_payload = _internal_dataframe_payload("stock_a_history", history_df, keyword=resolved_symbol, top_n=top_n)
+        history_metrics = _internal_history_metrics(history_df)
     except Exception as exc:
         history_payload = json.dumps({"tool": "stock_a_history", "error": str(exc)}, ensure_ascii=False)
+        history_metrics = {"error": str(exc)}
 
     profile_payload = None
     try:
@@ -596,10 +612,14 @@ def stock_a_snapshot(symbol_or_name: str, history_days: int = 120, top_n: int = 
             "resolved_symbol": resolved_symbol,
             "resolved_name": resolved_name,
             "history_window_days": int(history_days or 120),
-            "as_of": end_date,
+            "requested_as_of": end_date,
+            "as_of": history_metrics.get("latest_trade_date") or end_date,
+            "data_lag_days": history_metrics.get("data_lag_days"),
+            "is_stale": history_metrics.get("is_stale"),
             "lookup": lookup_payload,
             "spot": spot_payload,
             "history": json.loads(history_payload) if isinstance(history_payload, str) else history_payload,
+            "metrics": history_metrics,
             "profile": json.loads(profile_payload) if isinstance(profile_payload, str) else profile_payload,
         },
         ensure_ascii=False,
@@ -674,7 +694,10 @@ def stock_a_hold_analysis(symbol_or_name: str, history_days: int = 90) -> str:
             "input": symbol_or_name,
             "resolved_symbol": resolved_symbol,
             "resolved_name": resolved_name,
-            "as_of": end_date,
+            "requested_as_of": end_date,
+            "as_of": history_metrics.get("latest_trade_date") or end_date,
+            "data_lag_days": history_metrics.get("data_lag_days"),
+            "is_stale": history_metrics.get("is_stale"),
             "history_window_days": int(history_days or 90),
             "hold_view": hold_summary.get("conclusion"),
             "hold_reason": hold_summary.get("reason"),
@@ -736,6 +759,128 @@ def stock_a_conclusion(symbol_or_name: str, history_days: int = 90) -> str:
         ensure_ascii=False,
         default=str,
     )
+
+
+def _internal_resolved_symbol_payload(tool_name: str, symbol_or_name: str) -> tuple[str | None, dict | None]:
+    resolved_symbol = _internal_resolve_a_stock_symbol(symbol_or_name)
+    if not resolved_symbol:
+        return None, {
+            "tool": tool_name,
+            "error": f"unable to resolve stock symbol or name: {symbol_or_name}",
+            "fetch_time": datetime.now().isoformat(),
+        }
+    return resolved_symbol, None
+
+
+def _internal_json_payload(tool_name: str, symbol_or_name: str, fetch_fn, top_n: int = 10) -> str:
+    resolved_symbol, error_payload = _internal_resolved_symbol_payload(tool_name, symbol_or_name)
+    if error_payload:
+        return json.dumps(error_payload, ensure_ascii=False)
+    try:
+        with _internal_without_proxy_env():
+            df = fetch_fn(resolved_symbol)
+        payload = json.loads(_internal_dataframe_payload(tool_name, df, keyword=None, top_n=top_n))
+        payload.update(
+            {
+                "input": symbol_or_name,
+                "resolved_symbol": resolved_symbol,
+                "fetch_time": datetime.now().isoformat(),
+                "data_as_of": _internal_infer_payload_date(payload),
+            }
+        )
+        return json.dumps(payload, ensure_ascii=False, default=str)
+    except Exception as exc:
+        return json.dumps(
+            {
+                "tool": tool_name,
+                "input": symbol_or_name,
+                "resolved_symbol": resolved_symbol,
+                "error": str(exc),
+                "fetch_time": datetime.now().isoformat(),
+            },
+            ensure_ascii=False,
+        )
+
+
+def _internal_infer_payload_date(payload: dict) -> str | None:
+    candidates = ["日期", "公告日期", "报告期", "报告日期", "评级日期", "发布时间", "时间"]
+    for row in payload.get("sample", []) or []:
+        if not isinstance(row, dict):
+            continue
+        for key in candidates:
+            if row.get(key):
+                return str(row[key])
+    return None
+
+
+@tool
+def stock_a_valuation(symbol_or_name: str, top_n: int = 10) -> str:
+    """获取A股估值数据，优先使用百度股市通估值接口。"""
+
+    def _internal_fetch(symbol: str):
+        if hasattr(ak, "stock_zh_valuation_baidu"):
+            return ak.stock_zh_valuation_baidu(symbol=symbol)
+        if hasattr(ak, "stock_value_em"):
+            return ak.stock_value_em(symbol=symbol)
+        raise AttributeError("no valuation API available")
+
+    return _internal_json_payload("stock_a_valuation", symbol_or_name, _internal_fetch, top_n=top_n)
+
+
+@tool
+def stock_a_financial_indicators(symbol_or_name: str, top_n: int = 12) -> str:
+    """获取A股财务分析主要指标。"""
+
+    def _internal_fetch(symbol: str):
+        if hasattr(ak, "stock_financial_analysis_indicator_em"):
+            return ak.stock_financial_analysis_indicator_em(symbol=symbol)
+        if hasattr(ak, "stock_financial_abstract"):
+            return ak.stock_financial_abstract(symbol=symbol)
+        raise AttributeError("no financial indicator API available")
+
+    return _internal_json_payload("stock_a_financial_indicators", symbol_or_name, _internal_fetch, top_n=top_n)
+
+
+@tool
+def stock_a_fund_flow(symbol_or_name: str, top_n: int = 10) -> str:
+    """获取A股个股资金流数据。"""
+
+    def _internal_fetch(symbol: str):
+        if hasattr(ak, "stock_individual_fund_flow"):
+            return ak.stock_individual_fund_flow(stock=symbol)
+        if hasattr(ak, "stock_fund_flow_individual"):
+            return ak.stock_fund_flow_individual(symbol=symbol)
+        raise AttributeError("no fund flow API available")
+
+    return _internal_json_payload("stock_a_fund_flow", symbol_or_name, _internal_fetch, top_n=top_n)
+
+
+@tool
+def stock_a_research_report(symbol_or_name: str, top_n: int = 10) -> str:
+    """获取A股个股研报/评级相关数据。"""
+
+    def _internal_fetch(symbol: str):
+        if hasattr(ak, "stock_research_report_em"):
+            return ak.stock_research_report_em(symbol=symbol)
+        if hasattr(ak, "stock_rank_forecast_cninfo"):
+            return ak.stock_rank_forecast_cninfo(symbol=symbol)
+        raise AttributeError("no research report API available")
+
+    return _internal_json_payload("stock_a_research_report", symbol_or_name, _internal_fetch, top_n=top_n)
+
+
+@tool
+def stock_a_notice(symbol_or_name: str, top_n: int = 10) -> str:
+    """获取A股个股公告数据。"""
+
+    def _internal_fetch(symbol: str):
+        if hasattr(ak, "stock_individual_notice_report"):
+            return ak.stock_individual_notice_report(symbol=symbol)
+        if hasattr(ak, "stock_notice_report"):
+            return ak.stock_notice_report(symbol=symbol)
+        raise AttributeError("no notice API available")
+
+    return _internal_json_payload("stock_a_notice", symbol_or_name, _internal_fetch, top_n=top_n)
 
 
 @tool
@@ -981,6 +1126,11 @@ def get_akshare_tools():
         stock_a_hold_analysis,
         stock_a_conclusion,
         stock_a_individual_info,
+        stock_a_valuation,
+        stock_a_financial_indicators,
+        stock_a_fund_flow,
+        stock_a_research_report,
+        stock_a_notice,
         stock_a_lookup,
         stock_a_spot,
         market_summary,
