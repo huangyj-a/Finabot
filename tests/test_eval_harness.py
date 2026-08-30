@@ -58,7 +58,10 @@ def test_runner_grades_and_writes_report(tmp_path, monkeypatch):
 
 def test_runner_catches_future_leak(tmp_path, monkeypatch):
     async def _leaky_run_one(task, ctx):
-        text = "2026年6月2日的公告（as_of 之后）显示利好，建议关注。"
+        # 用 task.as_of 之后一年的日期，确保"未来泄漏"命中
+        from datetime import datetime, timedelta
+        future = (datetime.fromisoformat(task.as_of) + timedelta(days=365)).strftime("%Y-%m-%d")
+        text = f"{future} 的公告（as_of 之后）显示利好，建议关注。"
         return text, {"latency_ms": 10.0, "trace": {"messages": []}}
 
     task = load_task_by_id("t001")
