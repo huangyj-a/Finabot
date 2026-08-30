@@ -18,7 +18,7 @@ from langchain_core.messages import BaseMessage
 
 from finabot.agents.context import ContextBuilder
 from finabot.agents.streaming import get_token_sink, is_streamable_label
-from finabot.agents.telemetry import LLMCallMetric, LLM_METRICS, utc_timestamp
+from finabot.agents.telemetry import LLM_CIRCUIT_BREAKER, LLMCallMetric, LLM_METRICS, utc_timestamp
 
 
 def resolve_provider(provider: str | None) -> str:
@@ -448,6 +448,29 @@ async def _internal_acompletion_stream(
 
 
 async def litellm_glm_call(
+    messages: list[BaseMessage],
+    tools=None,
+    memories=None,
+    stream_label: str | None = None,
+    system_prompt: str | None = None,
+):
+    """LLM 调用入口：熔断器包装 + 调用核心逻辑。
+
+    熔断器打开（连续失败过多）时立即抛出，避免每个请求都耗尽重试预算
+    打爆下游端点；成功/失败分别回记熔断器。
+    """
+    if LLM_CIRCUIT_BREAKER.is_open():
+        raise RuntimeError("LLM 熔断中（连续失败过多），请稍后重试")
+    try:
+        result = await _internal_litellm_call(messages, tools, memories, stream_label, system_prompt)
+        LLM_CIRCUIT_BREAKER.record_success()
+        return result
+    except Exception:
+        LLM_CIRCUIT_BREAKER.record_failure()
+        raise
+
+
+async def _internal_litellm_call(
     messages: list[BaseMessage],
     tools=None,
     memories=None,

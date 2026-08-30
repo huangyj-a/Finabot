@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import threading
+import time
 from collections import deque
 from dataclasses import asdict, dataclass
 from datetime import datetime
@@ -134,6 +135,55 @@ class SubagentMetricsRegistry:
 SUBAGENT_METRICS = SubagentMetricsRegistry()
 
 
+class LLMCircuitBreaker:
+    """连续 LLM 失败熔断：达到阈值后冷却期内直接拒绝新调用，避免反复打爆下游。
+
+    评估报告"预算"与 loop 护栏：端点不可用时不应让每个请求都耗尽重试预算。
+    冷却结束后自动半开（重置连续失败计数），下次成功即彻底关闭。
+    """
+
+    def __init__(self, failure_threshold: int = 5, cooldown_seconds: float = 60.0):
+        self._lock = threading.Lock()
+        self._consecutive_failures = 0
+        self._opened_until = 0.0
+        self.failure_threshold = max(1, int(failure_threshold))
+        self.cooldown_seconds = max(0.0, float(cooldown_seconds))
+
+    def is_open(self) -> bool:
+        with self._lock:
+            if self._opened_until:
+                if time.monotonic() < self._opened_until:
+                    return True
+                # 冷却结束：半开（重置计数，等待下一次调用验证）
+                self._opened_until = 0.0
+                self._consecutive_failures = 0
+            return False
+
+    def record_success(self) -> None:
+        with self._lock:
+            self._consecutive_failures = 0
+            self._opened_until = 0.0
+
+    def record_failure(self) -> None:
+        with self._lock:
+            self._consecutive_failures += 1
+            if self._consecutive_failures >= self.failure_threshold:
+                self._opened_until = time.monotonic() + self.cooldown_seconds
+
+    def snapshot(self) -> dict[str, Any]:
+        with self._lock:
+            now = time.monotonic()
+            open_state = bool(self._opened_until and now < self._opened_until)
+            return {
+                "open": open_state,
+                "consecutive_failures": self._consecutive_failures,
+                "failure_threshold": self.failure_threshold,
+            }
+
+
+LLM_CIRCUIT_BREAKER = LLMCircuitBreaker()
+
+
 def utc_timestamp() -> str:
     return datetime.now().astimezone().isoformat(timespec="milliseconds")
 
@@ -144,3 +194,7 @@ def snapshot_llm_metrics() -> dict[str, Any]:
 
 def snapshot_subagent_metrics() -> dict[str, Any]:
     return SUBAGENT_METRICS.snapshot()
+
+
+def snapshot_circuit_breaker() -> dict[str, Any]:
+    return LLM_CIRCUIT_BREAKER.snapshot()

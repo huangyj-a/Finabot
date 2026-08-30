@@ -13,7 +13,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
-from finabot.agents.telemetry import snapshot_llm_metrics, snapshot_subagent_metrics
+from finabot.agents.telemetry import snapshot_circuit_breaker, snapshot_llm_metrics, snapshot_subagent_metrics
 from finabot.bus.queue import MessageBus
 
 
@@ -159,6 +159,7 @@ class RuntimeService:
             },
             "llm": snapshot_llm_metrics(),
             "subagents": snapshot_subagent_metrics(),
+            "circuit_breaker": snapshot_circuit_breaker(),
             "tasks": [task.snapshot() for task in self._tasks],
         }
 

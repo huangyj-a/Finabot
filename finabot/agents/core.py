@@ -18,6 +18,7 @@ from finabot.agents.memory import (
     save_working_memory,
 )
 from finabot.agents.llm import litellm_glm_call
+from finabot.agents.trace import write_run_trace
 from finabot.agents.rolling_summary import (
     SUMMARY_SYSTEM_PROMPT,
     get_rolling_summary,
@@ -237,6 +238,9 @@ class Agent:
 
         snapshot = await self.graph.aget_state(config)
         final: dict = dict(snapshot.values) if snapshot.values is not None else dict(input_state)
+
+        # 每轮运行 trace 落盘（尽力而为，供周度抽读；失败不阻断）
+        write_run_trace(key, final)
 
         reply = final["messages"][-1].content
         # 沉淀长期记忆：用户画像（偏好/风险风格）、关注股票、历史分析结论
