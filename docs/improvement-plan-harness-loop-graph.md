@@ -346,7 +346,7 @@ run_meta: dict                      # llm_calls, cost, started_at, recursion_use
 
 ### P2（W4 前收尾）
 
-19. CI 集成（回归集每日、成对比较、严重失败阻断）
+19. ✅ CI 集成（`.github/workflows/ci.yml`：push/PR 离线测试矩阵 3.10/3.11 + 每日评估回归（`finabot eval-run`，需仓库 secrets `LLM_API_KEY` 等）；成对比较/严重失败阻断待接 CI 门禁）
 20. ✅ 只读实时影子套件（`FINABOT_EVAL_SHADOW=1`：harness `_default_run_one` 不拦截数据源、走实时公开数据并记录证据元数据，用于发现数据源漂移/接口异常）
 21. 成本/延迟预算硬约束；季度红队
 
