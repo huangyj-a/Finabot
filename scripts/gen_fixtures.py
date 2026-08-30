@@ -53,10 +53,30 @@ def _resolve_code(ak, stock: str, market: str) -> str | None:
     return stock  # HK/基金/指数无法本地消歧时，直接用入参作为 symbol
 
 
+def _market_prefix(code: str) -> str:
+    cleaned = str(code or "").strip()
+    if cleaned.startswith("6"):
+        return f"sh{cleaned}"
+    return f"sz{cleaned}"
+
+
+def _history_sampler(ak, code: str):
+    """历史行情：优先 eastmoney，失败回退腾讯源（与工具层 fallback 一致）。"""
+
+    def _fetch():
+        end = datetime.now().strftime("%Y%m%d")
+        try:
+            return ak.stock_zh_a_hist(symbol=code, start_date="20240101", end_date=end, adjust="qfq")
+        except Exception:
+            return ak.stock_zh_a_hist_tx(symbol=_market_prefix(code), start_date="20240101", end_date=end, adjust="qfq")
+
+    return _fetch
+
+
 def _samplers_a(ak, code: str) -> dict[str, object]:
     return {
         "stock_info_a_code_name": lambda: ak.stock_info_a_code_name(),
-        "stock_zh_a_hist": lambda: ak.stock_zh_a_hist(symbol=code, start_date="20240101", end_date=datetime.now().strftime("%Y%m%d"), adjust="qfq"),
+        "stock_zh_a_hist": _history_sampler(ak, code),
         "stock_zh_a_spot_em": lambda: ak.stock_zh_a_spot_em(),
         "stock_individual_info_em": lambda: ak.stock_individual_info_em(symbol=code),
         "stock_value_em": lambda: ak.stock_value_em(symbol=code),
@@ -102,7 +122,8 @@ def sample_market(ak, market: str, code: str) -> dict[str, object]:
     fetched: dict[str, object] = {}
     for name, fn in samplers(ak, code).items():
         try:
-            fetched[name] = records_from_frame(fn())
+            # 250 行 ≈ 一年交易日，足以计算 20/60 日涨跌幅与均线
+            fetched[name] = records_from_frame(fn(), limit=250)
         except Exception:
             fetched[name] = []
     return fetched
