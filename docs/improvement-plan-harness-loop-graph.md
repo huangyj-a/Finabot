@@ -341,13 +341,13 @@ run_meta: dict                      # llm_calls, cost, started_at, recursion_use
 14. ✅ 单 Agent 对照组（`build_graph(single_agent=True)`）+ ✅ 六组消融 harness 化（`finabot/eval/ablation.py`：single_agent/no_bear/no_structured/full/random_failure/conflicting_evidence，`run_ablations`/`compare_ablations`，环境变量隔离不泄漏；`tests/test_eval_ablation.py`）
 15. ✅ 事实门 + 失败注入 + 最高风险回显 + 辩论证据流三分类：`graders.check_fact_traceability` + `agents/failure.py` + `include_bear`/`FINABOT_NO_BEAR` + summary_manager 最高风险清单回显 + `hold_pipeline` 子图 supporting/opposing/unknown 三分类证据（bull→支持、bear→反对，summary 保留冲突；`tests/test_failure_injection.py`/`test_summary_manager.py`）。**`data_agent`/`report_agent` 节点（见 3.7）待续**
 16. ✅ 结构化输出 Schema 全面接入子代理 prompt（`maybe_append_instruction(role, content)` 已接入 6 个子代理；`parse_subagent_result` 拆分「正文+JSON」保留正文给下游、抽取 claims/evidence/risk_flags 进 state；graph 节点包装 + `_internal_invoke_sub_agent` + hold_pipeline 子图三层接线；默认关闭，评估设 `FINABOT_STRUCTURED_OUTPUT=1` 开启）
-17. ✅ 部分 loop 护栏：多工具多参数文本解析 + `recursion_limit` + 子代理维度 telemetry（`telemetry.SubagentMetricsRegistry` 按子代理记录 calls/failures/latency，`_call_with_timeout` 接线，runtime snapshot 暴露；`tests/test_subagent_telemetry.py`）。**LLM 熔断 + 总 deadline、运行级 LLM 调用预算、`memory/runtime/traces/` 落盘待续**
+17. ✅ loop 护栏：多工具多参数文本解析 + `recursion_limit` + 子代理维度 telemetry + LLM 熔断（`telemetry.LLMCircuitBreaker` 连续失败熔断/半开，`litellm_glm_call` 包装）+ 运行级 LLM 调用计数（`call_llm_node` 递增 `run_meta.llm_calls`）+ 运行 trace 落盘（`agents/trace.py` → `memory/runtime/traces/`）。**总 deadline、token/成本硬约束待续**
 18. ✅ 规则预路由（`agents/router.py`）+ ✅ 数据源分级（`eval/policy/sources.json` + `finabot/eval/sources.py` `source_level()`，`tests/test_eval_sources.py`）
 
 ### P2（W4 前收尾）
 
 19. CI 集成（回归集每日、成对比较、严重失败阻断）
-20. 只读实时影子套件（`FINABOT_EVAL_SHADOW=1` 已留接口，未接线）
+20. ✅ 只读实时影子套件（`FINABOT_EVAL_SHADOW=1`：harness `_default_run_one` 不拦截数据源、走实时公开数据并记录证据元数据，用于发现数据源漂移/接口异常）
 21. 成本/延迟预算硬约束；季度红队
 
 ---
