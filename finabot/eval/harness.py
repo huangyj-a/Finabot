@@ -18,6 +18,7 @@ from typing import Any, Awaitable, Callable
 
 from finabot.eval.frozen_data import FrozenData, install_frozen_akshare, patch_akshare
 from finabot.eval.graders import (
+    check_fact_traceability,
     check_reference_calculations,
     deterministic_dimension_scores,
     run_hard_gates,
@@ -52,7 +53,8 @@ async def _default_run_one(task: EvalTask, ctx: dict[str, Any]) -> tuple[str, di
 
     started = time.perf_counter()
     try:
-        graph = build_graph(checkpointer=None)
+        single_agent = bool(ctx.get("single_agent", False)) or os.getenv("FINABOT_SINGLE_AGENT", "0").strip().lower() in {"1", "true", "yes", "on"}
+        graph = build_graph(checkpointer=None, single_agent=single_agent)
         state: dict[str, Any] = {
             "messages": [HumanMessage(content=task.question)],
             "session_key": f"eval:{task.task_id}",
@@ -106,6 +108,7 @@ class TrialRecord:
     future_leak: bool
     tool_errors: int
     judge_scores: dict[str, float] = field(default_factory=dict)
+    fact_traceability: dict[str, Any] = field(default_factory=dict)
     refusal_expected: bool = False
     refusal_given: bool = False
     refusal_appropriate: bool = True
@@ -126,6 +129,7 @@ class TrialRecord:
             "future_leak": self.future_leak,
             "tool_errors": self.tool_errors,
             "judge_scores": self.judge_scores,
+            "fact_traceability": self.fact_traceability,
             "refusal_expected": self.refusal_expected,
             "refusal_given": self.refusal_given,
             "refusal_appropriate": self.refusal_appropriate,
@@ -203,6 +207,8 @@ class EvalRunner:
         trace = extra.get("trace", {})
         tool_errors = _internal_count_tool_errors(trace)
         future_leak = "no_future_leak" in failed_gates
+        evidence_text = _internal_evidence_text(trace)
+        fact_traceability = check_fact_traceability(final_text, evidence_text)
 
         # 拒绝准确性：从问题与门禁推导（可被 harness 覆盖）
         from finabot.agents.refusal import classify_question
@@ -226,6 +232,7 @@ class EvalRunner:
             future_leak=future_leak,
             tool_errors=tool_errors,
             judge_scores=judge_scores,
+            fact_traceability=fact_traceability,
             refusal_expected=refusal_expected,
             refusal_given=refusal_given,
             refusal_appropriate=refusal_appropriate,
@@ -255,3 +262,16 @@ def _internal_count_tool_errors(trace: dict[str, Any]) -> int:
         if "执行失败" in content or "未知工具" in content or "无法解析" in content:
             count += 1
     return count
+
+
+def _internal_evidence_text(trace: dict[str, Any]) -> str:
+    """Concatenate handoff reports + evidence registry into one text blob."""
+    parts: list[str] = []
+    for value in (trace.get("reports") or {}).values():
+        if value:
+            parts.append(str(value))
+    for meta in (trace.get("evidence_registry") or {}).values():
+        if isinstance(meta, dict):
+            parts.append(str(meta.get("preview", "")))
+            parts.append(str(meta.get("data_as_of", "")))
+    return "\n".join(parts)

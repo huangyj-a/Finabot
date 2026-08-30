@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import asyncio
 import operator
+import os
 from typing import Annotated, Any, TypedDict
 
 from langchain_core.messages import AIMessage
@@ -142,14 +143,19 @@ async def _summary_node(state: _HoldPipelineState) -> dict[str, str]:
     return {"summary_report": summary_report, "messages": [AIMessage(content=summary_report or "")]}
 
 
-def build_hold_analysis_subgraph():
-    """编译持有分析子图：fetch → fundamental → news → (bull ∥ bear) → summary。"""
+def build_hold_analysis_subgraph(include_bear: bool = True):
+    """编译持有分析子图：fetch → fundamental → news → (bull ∥ [bear]) → summary。
+
+    ``include_bear=False`` 时移除看空研究员节点（评估报告消融"无看空角色"），
+    此时 bear_report 保持为空，summary 仅基于看涨与基本面/新闻整合。
+    """
     g = StateGraph(_HoldPipelineState)
     g.add_node("fetch", _fetch_node)
     g.add_node("fundamental", _fundamental_node)
     g.add_node("news", _news_node)
     g.add_node("bull", _bull_node)
-    g.add_node("bear", _bear_node)
+    if include_bear:
+        g.add_node("bear", _bear_node)
     g.add_node("summary", _summary_node)
 
     g.add_edge(START, "fetch")
@@ -157,21 +163,29 @@ def build_hold_analysis_subgraph():
     g.add_edge("fundamental", "news")
     # 多空并行扇出：bull 与 bear 互不依赖，分别独立运行后汇聚到 summary
     g.add_edge("news", "bull")
-    g.add_edge("news", "bear")
+    if include_bear:
+        g.add_edge("news", "bear")
     g.add_edge("bull", "summary")
-    g.add_edge("bear", "summary")
+    if include_bear:
+        g.add_edge("bear", "summary")
     g.add_edge("summary", END)
     return g.compile()
 
 
 # 编译一次，复用；run_hold_analysis_pipeline 只负责注入输入并读取结果
-_HOLD_SUBGRAPH = build_hold_analysis_subgraph()
+_HOLD_SUBGRAPH = build_hold_analysis_subgraph(include_bear=True)
+_HOLD_SUBGRAPH_NO_BEAR = build_hold_analysis_subgraph(include_bear=False)
+
+
+def _no_bear_enabled() -> bool:
+    return os.getenv("FINABOT_NO_BEAR", "0").strip().lower() in {"1", "true", "yes", "on"}
 
 
 async def run_hold_analysis_pipeline(
     expression: str,
     state_context: dict[str, Any] | None = None,
     debate_mode: bool = False,
+    include_bear: bool | None = None,
 ) -> dict[str, Any]:
     """Fundamental → news → bull+bear (parallel) → summary as a compiled subgraph.
 
@@ -200,7 +214,10 @@ async def run_hold_analysis_pipeline(
         "messages": [],
     }
 
-    result = await _HOLD_SUBGRAPH.ainvoke(initial)
+    if include_bear is None:
+        include_bear = not _no_bear_enabled()
+    subgraph = _HOLD_SUBGRAPH if include_bear else _HOLD_SUBGRAPH_NO_BEAR
+    result = await subgraph.ainvoke(initial)
 
     final_fundamentals = result.get("fundamentals_report") or result.get("fundamentals_report_raw") or ""
     out: dict[str, Any] = {

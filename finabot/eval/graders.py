@@ -236,3 +236,54 @@ def check_reference_calculations(
         "results": results,
         "pass_ratio": passed / len(results) if results else 1.0,
     }
+
+
+# --------------------------------------------------------------------------
+# 事实门（报告"报告 Agent 不新增事实"不变量）
+# --------------------------------------------------------------------------
+
+def check_fact_traceability(
+    final_text: str,
+    evidence_text: str = "",
+) -> dict[str, Any]:
+    """Verify the final report's significant numbers trace to upstream evidence.
+
+    Deterministic heuristic for the "报告不新增事实" invariant: significant
+    numbers (>=2 digits, excluding year-like ``20xx`` and common small ints)
+    in the final report must appear in the upstream evidence (handoff reports
+    + evidence registry), unless the report explicitly marks the data missing.
+
+    Returns
+    -------
+    {total, traceable, untraceable, untraceable_samples, missing_marked,
+     pass, ratio}
+    """
+    evidence = str(evidence_text or "")
+    missing_marked = bool(
+        re.search(r"(数据缺失|暂无数据|来源/日期缺失|时间未知|无法获取)", final_text)
+    )
+
+    tokens = re.findall(r"\d{2,}(?:\.\d+)?%?", final_text)
+
+    def _significant(token: str) -> bool:
+        if len(token) <= 2:
+            return False
+        if re.fullmatch(r"20\d{2}", token):  # 年份，不算事实数字
+            return False
+        return True
+
+    significant = [t for t in tokens if _significant(t)]
+    traceable = [t for t in significant if t in evidence]
+    untraceable = [t for t in significant if t not in evidence]
+
+    total = len(significant)
+    return {
+        "total": total,
+        "traceable": len(traceable),
+        "untraceable": len(untraceable),
+        "untraceable_samples": list(dict.fromkeys(untraceable))[:10],
+        "missing_marked": missing_marked,
+        # 无不可回溯数字，或报告已标注数据缺失 → 不判"新增事实"
+        "pass": (not untraceable) or missing_marked,
+        "ratio": (len(traceable) / total) if total else 1.0,
+    }

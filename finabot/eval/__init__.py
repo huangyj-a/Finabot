@@ -16,4 +16,5 @@ __all__ = [
     "frozen_data",
     "harness",
     "llm_judge",
+    "ablation",
 ]

@@ -14,9 +14,21 @@ from finabot.agents.analysts import (
     market_analyst,
 )
 from finabot.agents.hold_pipeline import run_hold_analysis_pipeline
+from finabot.agents.failure import injected_failure
 from finabot.agents.researchers import researchers
 from finabot.agents.schema import structured_state_update
 from finabot.graph.router import classify_intent
+
+
+def _internal_failure_update(node_name: str, state: AgentState) -> dict | None:
+    """返回失败注入的 state 增量；未命中注入时返回 None。"""
+    fail = injected_failure(node_name)
+    if fail is None:
+        return None
+    return {
+        "messages": [AIMessage(content=fail)],
+        "risk_flags": list(state.get("risk_flags", []) or []) + [fail],
+    }
 
 
 def _internal_router_node(state: AgentState) -> dict:
@@ -35,6 +47,10 @@ def _internal_route_intent(state: AgentState) -> str:
 
 
 async def _internal_market_analyst_node(state: AgentState):
+    fail = _internal_failure_update("market_analyst", state)
+    if fail is not None:
+        fail["market_report"] = fail["messages"][0].content
+        return fail
     expression = _internal_latest_user_message(state)
     raw = await _call_with_timeout(
         market_analyst.ainvoke({"expression": expression}),
@@ -46,6 +62,10 @@ async def _internal_market_analyst_node(state: AgentState):
 
 
 async def _internal_fundamental_analyst_node(state: AgentState):
+    fail = _internal_failure_update("fundamental_analyst", state)
+    if fail is not None:
+        fail["fundamentals_report"] = fail["messages"][0].content
+        return fail
     expression = _internal_latest_user_message(state)
     raw = await _call_with_timeout(
         _internal_call_fundamental_analyst(expression, state.setdefault("akshare_cache", {})),
@@ -57,6 +77,10 @@ async def _internal_fundamental_analyst_node(state: AgentState):
 
 
 async def _internal_news_analyst_node(state: AgentState):
+    fail = _internal_failure_update("news_analyst", state)
+    if fail is not None:
+        fail["news_report"] = fail["messages"][0].content
+        return fail
     expression = _internal_latest_user_message(state)
     raw = await _call_with_timeout(
         _internal_call_news_analyst(expression, state.setdefault("akshare_cache", {})),
@@ -68,6 +92,9 @@ async def _internal_news_analyst_node(state: AgentState):
 
 
 async def _internal_researchers_node(state: AgentState):
+    fail = _internal_failure_update("researchers", state)
+    if fail is not None:
+        return fail
     expression = _internal_latest_user_message(state)
     raw = await _call_with_timeout(
         researchers.ainvoke({"expression": expression}),
@@ -91,6 +118,10 @@ def _internal_extract_debate_mode(state: AgentState) -> bool:
 
 
 async def _internal_hold_analysis_pipeline_node(state: AgentState):
+    fail = _internal_failure_update("hold_analysis_pipeline", state)
+    if fail is not None:
+        fail["summary_report"] = fail["messages"][0].content
+        return fail
     expression = _internal_latest_user_message(state)
     debate_mode = _internal_extract_debate_mode(state)
     pipeline_result = await _call_with_timeout(

@@ -338,8 +338,8 @@ run_meta: dict                      # llm_calls, cost, started_at, recursion_use
 11. ⏳ 冻结数据 fixture 工厂扩至全部任务（当前仅 t001 有示例快照；正式基线需真实接口采样）
 12. ✅ 注入防护（`context.py:_format_memories` 记忆区块标记 `[UNTRUSTED_DATA]`，指令性文字不得视为系统指令；`tests/test_injection_protection.py`）。**新闻正文隔离待续**
 13. ✅ LLM Judge（新闻/反证/综合，隔离调用）：`finabot/eval/llm_judge.py`（三个冻结 judge prompt，`litellm_glm_call(system_prompt=...)` 隔离，失败回退确定性评分）；`EvalRunner(enable_llm_judge=True)` 覆盖 news_reasoning/bear_counter/agent_synthesis 三维度；CLI `--judge` 开关；`tests/test_eval_llm_judge.py`。**专家校准流程（双人盲评 ≥100 trial）待续**
-14. ✅ 单 Agent 对照组（`build_graph(single_agent=True)`：仅 supervisor+tool，`SINGLE_AGENT_SYSTEM_PROMPT` + `format_tools(single_agent=True)` 剔除子代理；`tests/test_single_agent_mode.py`）。**六组消融 harness 化待续**
-15. ⏳ 事实门 + 最高风险不变量 + 失败注入 + `data_agent`/`report_agent` 节点（见 3.7）+ 辩论证据流三分类与冲突记录（见 3.8）
+14. ✅ 单 Agent 对照组（`build_graph(single_agent=True)`）+ ✅ 六组消融 harness 化（`finabot/eval/ablation.py`：single_agent/no_bear/no_structured/full/random_failure/conflicting_evidence，`run_ablations`/`compare_ablations`，环境变量隔离不泄漏；`tests/test_eval_ablation.py`）
+15. ✅ 事实门 + 失败注入（部分）：`graders.check_fact_traceability`（最终报告关键数字回溯证据，「报告不新增事实」不变量）+ `agents/failure.py`（`FINABOT_EVAL_FAIL_NODE` 失败注入，graph 节点返回占位并记入 risk_flags）+ `hold_pipeline` `include_bear`/`FINABOT_NO_BEAR`（无看空角色消融）；`tests/test_failure_injection.py`。**最高风险不消失强制回显、`data_agent`/`report_agent` 节点、辩论证据流三分类与冲突记录（见 3.7/3.8）待续**
 16. ✅ 结构化输出 Schema 全面接入子代理 prompt（`maybe_append_instruction(role, content)` 已接入 6 个子代理；`parse_subagent_result` 拆分「正文+JSON」保留正文给下游、抽取 claims/evidence/risk_flags 进 state；graph 节点包装 + `_internal_invoke_sub_agent` + hold_pipeline 子图三层接线；默认关闭，评估设 `FINABOT_STRUCTURED_OUTPUT=1` 开启）
 17. ⏳ loop 剩余护栏（见 2.3）：LLM 熔断 + 总 deadline、多工具多参数文本解析、`recursion_limit`、运行级 LLM 调用预算、子代理维度 telemetry、`memory/runtime/traces/` 落盘
 18. ⏳ 规则预路由已落地（`agents/router.py`，提交 39861e3）；数据源分级 `eval/policy/sources.yaml` 待建
