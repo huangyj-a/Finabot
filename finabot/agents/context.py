@@ -496,11 +496,10 @@ class ContextBuilder:
         tool_calls = getattr(msg, "tool_calls", None) or []
         if tool_calls:
             payload["tool_calls"] = [self._convert_tool_call(call) for call in tool_calls]
-        # DeepSeek 思考模式：多轮回放时须把上轮 assistant 的 reasoning_content
-        # 原样回传，否则 API 报 BadRequest（"reasoning_content must be passed back"）。
+        # DeepSeek 思考模式：多轮回放时每个 assistant 消息都必须带 reasoning_content
+        # （真实思考内容原样回传；合成报告类消息补空串），否则 API 报 BadRequest。
         reasoning = (getattr(msg, "additional_kwargs", None) or {}).get("reasoning_content")
-        if reasoning:
-            payload["reasoning_content"] = reasoning
+        payload["reasoning_content"] = reasoning or ""
         return payload
 
     def _convert_tool_call(self, call: Any) -> dict:
