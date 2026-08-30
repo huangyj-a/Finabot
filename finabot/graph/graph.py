@@ -100,58 +100,72 @@ async def _internal_hold_analysis_pipeline_node(state: AgentState):
     }
 
 
-def _internal_route_supervisor(state: AgentState):
-    last = state["messages"][-1]
-    tool_calls = getattr(last, "tool_calls", None) or []
-    if not tool_calls:
-        return "end"
+def _internal_make_route_supervisor(single_agent: bool):
+    """路由闭包：单 Agent 模式不返回任何子代理分支，只有 tool/end。"""
 
-    if len(tool_calls) == 1:
-        tool_name = str(tool_calls[0].get("name") if isinstance(tool_calls[0], dict) else getattr(tool_calls[0], "name", "") or "")
-        if tool_name == "market_analyst":
-            return "market_analyst"
-        if tool_name == "fundamental_analyst":
-            return "fundamental_analyst"
-        if tool_name == "news_analyst":
-            return "news_analyst"
-        if tool_name == "researchers":
-            return "researchers"
-        if tool_name == "hold_analysis_pipeline":
-            return "hold_analysis_pipeline"
+    def _route(state: AgentState):
+        last = state["messages"][-1]
+        tool_calls = getattr(last, "tool_calls", None) or []
+        if not tool_calls:
+            return "end"
 
-    return "tool"
+        if not single_agent and len(tool_calls) == 1:
+            tool_name = str(tool_calls[0].get("name") if isinstance(tool_calls[0], dict) else getattr(tool_calls[0], "name", "") or "")
+            if tool_name == "market_analyst":
+                return "market_analyst"
+            if tool_name == "fundamental_analyst":
+                return "fundamental_analyst"
+            if tool_name == "news_analyst":
+                return "news_analyst"
+            if tool_name == "researchers":
+                return "researchers"
+            if tool_name == "hold_analysis_pipeline":
+                return "hold_analysis_pipeline"
+
+        return "tool"
+
+    return _route
 
 
-def build_graph(checkpointer=None):
+def build_graph(checkpointer=None, single_agent: bool = False):
+    from functools import partial
+
     g = StateGraph(AgentState)
-    g.add_node("supervisor", call_supervisor_node)
-    g.add_node("market_analyst", _internal_market_analyst_node)
-    g.add_node("fundamental_analyst", _internal_fundamental_analyst_node)
-    g.add_node("news_analyst", _internal_news_analyst_node)
-    g.add_node("researchers", _internal_researchers_node)
-    g.add_node("hold_analysis_pipeline", _internal_hold_analysis_pipeline_node)
+    g.add_node("supervisor", partial(call_supervisor_node, single_agent=single_agent))
+    if not single_agent:
+        g.add_node("market_analyst", _internal_market_analyst_node)
+        g.add_node("fundamental_analyst", _internal_fundamental_analyst_node)
+        g.add_node("news_analyst", _internal_news_analyst_node)
+        g.add_node("researchers", _internal_researchers_node)
+        g.add_node("hold_analysis_pipeline", _internal_hold_analysis_pipeline_node)
     g.add_node("tool", call_tool_node)
 
     g.add_edge(START, "supervisor")
 
-    g.add_conditional_edges(
-        "supervisor",
-        _internal_route_supervisor,
-        {
+    route_map = {
+        "tool": "tool",
+        "end": END,
+    }
+    if not single_agent:
+        route_map.update({
             "market_analyst": "market_analyst",
             "fundamental_analyst": "fundamental_analyst",
             "news_analyst": "news_analyst",
             "researchers": "researchers",
             "hold_analysis_pipeline": "hold_analysis_pipeline",
-            "tool": "tool",
-            "end": END,
-        }
+        })
+
+    g.add_conditional_edges(
+        "supervisor",
+        _internal_make_route_supervisor(single_agent),
+        route_map,
     )
 
-    g.add_edge("market_analyst", "supervisor")
-    g.add_edge("fundamental_analyst", "supervisor")
-    g.add_edge("news_analyst", "supervisor")
-    g.add_edge("researchers", "supervisor")
-    g.add_edge("hold_analysis_pipeline", "supervisor")
+    if not single_agent:
+        g.add_edge("market_analyst", "supervisor")
+        g.add_edge("fundamental_analyst", "supervisor")
+        g.add_edge("news_analyst", "supervisor")
+        g.add_edge("researchers", "supervisor")
+        g.add_edge("hold_analysis_pipeline", "supervisor")
     g.add_edge("tool", "supervisor")
     return g.compile(checkpointer=checkpointer)

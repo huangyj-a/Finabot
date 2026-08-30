@@ -46,6 +46,29 @@ def structured_output_enabled() -> bool:
     return value not in {"0", "false", "no", "off"}
 
 
+def structured_output_instruction(role: str) -> str:
+    """Return the JSON-output instruction to append to a sub-agent prompt.
+
+    Used by sub-agents when ``structured_output_enabled()`` is on, so the
+    model emits an ``AnalystOutput`` JSON object. When the model still returns
+    free text, the tolerant parser degrades gracefully.
+    """
+    return f"""
+输出格式要求：请把你的结论以单个 JSON 对象输出，字段如下（role 固定为 "{role}"）：
+{{
+  "role": "{role}",
+  "as_of": "数据截止日期，无则 null",
+  "claims": [
+    {{"text": "一条主张", "source_ids": ["引用来源ID或空数组"], "kind": "fact|calculation|inference|opinion", "as_of": "该主张的日期或 null"}}
+  ],
+  "evidence": ["支撑上述 claims 的证据摘要"],
+  "confidence": "high|medium|low",
+  "unknowns": ["缺失/不确定的数据或信息"],
+  "risk_flags": ["需要提示的风险点"]
+}}
+直接输出 JSON，不要输出 JSON 之外的任何解释文字。""".strip()
+
+
 def _extract_json_object(text: str) -> str | None:
     """Pull the first balanced JSON object from model text, if any."""
     if not text:

@@ -293,12 +293,12 @@ run_meta: dict                      # llm_calls, cost, started_at, recursion_use
 
 ### P1（W2–W3）
 
-11. 冻结数据 fixture 工厂扩至全部任务（当前仅 t001 有示例快照；正式基线需真实接口采样）
-12. 注入防护（记忆/新闻不可信区块 `[UNTRUSTED_DATA]`）
-13. LLM Judge（新闻/反证/综合）+ 专家校准流程
-14. 单 Agent 对照组 + 六组消融 harness 化
-15. 事实门 + 最高风险不变量 + 失败注入
-16. 结构化输出 Schema 全面接入子代理 prompt（当前模块与解析就绪，子代理仍输出自由文本，`FINABOT_STRUCTURED_OUTPUT=1` 时降级为 low confidence）
+11. ⏳ 冻结数据 fixture 工厂扩至全部任务（当前仅 t001 有示例快照；正式基线需真实接口采样）
+12. ✅ 注入防护（`context.py:_format_memories` 记忆区块标记 `[UNTRUSTED_DATA]`，指令性文字不得视为系统指令；`tests/test_injection_protection.py`）
+13. ⏳ LLM Judge（新闻/反证/综合）+ 专家校准流程
+14. ✅ 单 Agent 对照组（`build_graph(single_agent=True)`：仅 supervisor+tool，`SINGLE_AGENT_SYSTEM_PROMPT` + `format_tools(single_agent=True)` 剔除子代理；`tests/test_single_agent_mode.py`）。六组消融 harness 化待续
+15. ⏳ 事实门 + 最高风险不变量 + 失败注入
+16. ⏳ 结构化输出 Schema 全面接入子代理 prompt（`schema.py` 已新增 `structured_output_instruction(role)` 就绪，子代理 prompt 尚未接线，`FINABOT_STRUCTURED_OUTPUT=1` 时降级为 low confidence）
 
 ### P2（W4 前收尾）
 

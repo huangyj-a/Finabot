@@ -7,7 +7,7 @@ from time import perf_counter
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, ToolMessage
 from langchain_core.messages.tool import tool_call
 
-from finabot.agents.llm import litellm_glm_call, _debug_timing
+from finabot.agents.llm import SINGLE_AGENT_SYSTEM_PROMPT, litellm_glm_call, _debug_timing
 from finabot.agents.state import AgentState
 from finabot.agents.analysts.market_analyst import _internal_call_market_analyst
 from finabot.agents.analysts.news_analyst import _internal_call_news_analyst
@@ -251,10 +251,15 @@ def _strip_tool_call_markup(text: str) -> str:
     return cleaned.strip()
 
 
-def format_tools():
+def format_tools(single_agent: bool = False):
     formatted_tools = []
 
-    for t in tools:
+    tool_list = tools
+    if single_agent:
+        # 单 Agent 对照组：supervisor 不再看到任何子代理工具，只保留数据/计算工具
+        tool_list = [t for t in tools if t.name not in _SUB_AGENT_NAMES]
+
+    for t in tool_list:
         args_schema = getattr(t, "args_schema", None)
         if args_schema is not None and hasattr(args_schema, "model_json_schema"):
             parameters = args_schema.model_json_schema()
@@ -309,7 +314,7 @@ def _internal_refusal_note_for(state: AgentState) -> str:
     )
 
 
-async def call_llm_node(state: AgentState):
+async def call_llm_node(state: AgentState, single_agent: bool = False):
     # 轮次预算：第三方端点偏慢且模型可能反复派发子代理，若不限轮次会在
     # FINABOT_RESPONSE_TIMEOUT_SECONDS 内跑不完。超预算后强制让 supervisor 直接
     # 给出最终回答（去掉 tools 并丢弃残留工具调用），把总 LLM 调用数封顶。
@@ -336,12 +341,16 @@ async def call_llm_node(state: AgentState):
             ))
         ]
 
-    msg = await litellm_glm_call(
-        messages=messages,
-        tools=None if force_final else format_tools(),
-        memories=state.get("memories"),
-        stream_label="supervisor",
-    )
+    system_prompt = SINGLE_AGENT_SYSTEM_PROMPT if single_agent else None
+    call_kwargs: dict = {
+        "messages": messages,
+        "tools": None if force_final else format_tools(single_agent=single_agent),
+        "memories": state.get("memories"),
+        "stream_label": "supervisor",
+    }
+    if system_prompt is not None:
+        call_kwargs["system_prompt"] = system_prompt
+    msg = await litellm_glm_call(**call_kwargs)
 
     raw_tool_calls = getattr(msg, "tool_calls", None) or []
     tool_calls = [call for call in (normalize_tool_call(call) for call in raw_tool_calls) if call is not None]
