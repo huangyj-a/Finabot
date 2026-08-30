@@ -78,3 +78,40 @@ def test_no_bear_pipeline_returns_empty_bear(monkeypatch):
     assert result["bear_report"] == ""
     assert result["bull_report"] == "看涨论点"
     assert result["summary_report"] == "综合结论"
+
+
+def test_pipeline_returns_three_way_evidence(monkeypatch):
+    import finabot.agents.hold_pipeline as pipeline_module
+
+    async def fake_to_thread(func, *args, **kwargs):
+        return {}
+
+    async def fake_fundamental(expression, cache=None):
+        return "基本面解读"
+
+    async def fake_news(expression, cache=None):
+        return "新闻分析"
+
+    async def fake_bull(expression, ctx):
+        return "看涨论点"
+
+    async def fake_bear(expression, ctx):
+        return "看跌论点"
+
+    async def fake_summary(expression, context=None):
+        return "综合结论"
+
+    monkeypatch.setattr(pipeline_module.asyncio, "to_thread", fake_to_thread)
+    monkeypatch.setattr(pipeline_module, "_internal_call_fundamental_analyst", fake_fundamental)
+    monkeypatch.setattr(pipeline_module, "_internal_call_news_analyst", fake_news)
+    monkeypatch.setattr(pipeline_module, "_internal_call_bull_researcher", fake_bull)
+    monkeypatch.setattr(pipeline_module, "_internal_call_bear_researcher", fake_bear)
+    monkeypatch.setattr(pipeline_module, "_internal_call_summary_manager", fake_summary)
+
+    result = asyncio.run(
+        pipeline_module.run_hold_analysis_pipeline("茅台", {"akshare_cache": {}})
+    )
+
+    # 支持/反对证据分别来自看涨/看跌论点（结构化关闭时以自由文本形式记录）
+    assert "看涨论点" in result["supporting_evidence"]
+    assert "看跌论点" in result["opposing_evidence"]

@@ -47,6 +47,26 @@ def test_summary_prompt_requires_risk_echo():
     assert "最高风险回显" in _SUMMARY_MANAGER_PROMPT
 
 
+def test_summary_input_includes_three_way_evidence(monkeypatch):
+    from finabot.agents.managers import manager
+
+    monkeypatch.setattr(manager, "_internal_collect_fundamental_context", lambda expression, cache=None: "基本面数据")
+    content = manager._internal_format_summary_input(
+        "贵州茅台适合持有吗",
+        {
+            "supporting_evidence": ["品牌壁垒强"],
+            "opposing_evidence": ["估值不低"],
+            "unknown_evidence": ["批价数据缺失"],
+        },
+    )
+
+    assert "支持/反对/未知证据" in content
+    assert "品牌壁垒强" in content
+    assert "估值不低" in content
+    assert "批价数据缺失" in content
+    assert "冲突不得丢失" in content
+
+
 def test_hold_pipeline_node_writes_reports_back_to_state(monkeypatch):
     import asyncio
 

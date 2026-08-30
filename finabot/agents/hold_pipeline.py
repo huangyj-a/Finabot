@@ -58,6 +58,11 @@ class _HoldPipelineState(TypedDict):
     # 保证 bull/bear 并行扇出互不覆盖）。
     claims: Annotated[list, operator.add]
     risk_flags: Annotated[list, operator.add]
+    # 辩论证据流三分类（评估报告：支持/反对/未知 + 冲突保留）。
+    # 看涨论点进 supporting，看跌论点进 opposing，新闻中的不确定项进 unknown。
+    supporting_evidence: Annotated[list, operator.add]
+    opposing_evidence: Annotated[list, operator.add]
+    unknown_evidence: Annotated[list, operator.add]
     # 每个节点把自己的产出作为 AIMessage 追加进该通道，供父图 astream(subgraphs=True)
     # 实时透出"新闻完成 → 看涨 → 看跌 → 结论"的分步进度（不污染父图持久化状态）。
     messages: Annotated[list, operator.add]
@@ -106,6 +111,8 @@ async def _bull_node(state: _HoldPipelineState) -> dict[str, Any]:
     result = await _internal_call_bull_researcher(state["expression"], debate_context)
     display, claims, risk_flags = collect_structured_state("bull_researcher", result, state.get("as_of"))
     update: dict[str, Any] = {"bull_report": display, "messages": [AIMessage(content=display or "")]}
+    if display:
+        update["supporting_evidence"] = [display]  # 看涨论点 → 支持证据
     if claims:
         update["claims"] = claims
     if risk_flags:
@@ -118,6 +125,8 @@ async def _bear_node(state: _HoldPipelineState) -> dict[str, Any]:
     result = await _internal_call_bear_researcher(state["expression"], debate_context)
     display, claims, risk_flags = collect_structured_state("bear_researcher", result, state.get("as_of"))
     update: dict[str, Any] = {"bear_report": display, "messages": [AIMessage(content=display or "")]}
+    if display:
+        update["opposing_evidence"] = [display]  # 看跌论点 → 反对证据
     if claims:
         update["claims"] = claims
     if risk_flags:
@@ -139,6 +148,9 @@ async def _summary_node(state: _HoldPipelineState) -> dict[str, str]:
             "memories": state.get("memories", []),
             "akshare_cache": state["akshare_cache"],
             "risk_flags": state.get("risk_flags", []),
+            "supporting_evidence": state.get("supporting_evidence", []),
+            "opposing_evidence": state.get("opposing_evidence", []),
+            "unknown_evidence": state.get("unknown_evidence", []),
         },
     )
     return {"summary_report": summary_report, "messages": [AIMessage(content=summary_report or "")]}
@@ -212,6 +224,9 @@ async def run_hold_analysis_pipeline(
         "as_of": state_context.get("as_of"),
         "claims": [],
         "risk_flags": [],
+        "supporting_evidence": [],
+        "opposing_evidence": [],
+        "unknown_evidence": [],
         "messages": [],
     }
 
@@ -230,6 +245,9 @@ async def run_hold_analysis_pipeline(
         "summary_report": result.get("summary_report", ""),
         "claims": result.get("claims", []),
         "risk_flags": result.get("risk_flags", []),
+        "supporting_evidence": result.get("supporting_evidence", []),
+        "opposing_evidence": result.get("opposing_evidence", []),
+        "unknown_evidence": result.get("unknown_evidence", []),
     }
     if debate_mode:
         out["debate_report"] = _internal_build_debate_report(

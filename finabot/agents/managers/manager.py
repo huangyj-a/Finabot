@@ -98,6 +98,9 @@ def _internal_format_summary_input(expression: str, context: dict | None = None)
     memories = context.get("memories") or []
     confidence_report = context.get("confidence_report") or ""
     risk_flags = context.get("risk_flags") or []
+    supporting = context.get("supporting_evidence") or []
+    opposing = context.get("opposing_evidence") or []
+    unknown = context.get("unknown_evidence") or []
 
     risk_section = ""
     if risk_flags:
@@ -105,6 +108,17 @@ def _internal_format_summary_input(expression: str, context: dict | None = None)
             "=== 最高风险清单（必须在“看空/风险逻辑”段逐条回显，不得无解释消失）===\n"
             + "\n".join(f"- {flag}" for flag in risk_flags)
         )
+
+    evidence_section = ""
+    if supporting or opposing or unknown:
+        lines = ["=== 支持/反对/未知证据（三类都必须保留，冲突不得丢失）==="]
+        if supporting:
+            lines.append("【支持证据】" + "\n".join(f"- {item}" for item in supporting))
+        if opposing:
+            lines.append("【反对证据】" + "\n".join(f"- {item}" for item in opposing))
+        if unknown:
+            lines.append("【未知/待核验】" + "\n".join(f"- {item}" for item in unknown))
+        evidence_section = "\n".join(lines)
 
     return f"""
 用户问题：{expression}
@@ -127,7 +141,7 @@ def _internal_format_summary_input(expression: str, context: dict | None = None)
 === 用户记忆 ===
 {memories}
 
-{risk_section + chr(10) if risk_section else ""}{confidence_report + chr(10) if confidence_report else ""}=== 回答格式 ===
+{evidence_section + chr(10) if evidence_section else ""}{risk_section + chr(10) if risk_section else ""}{confidence_report + chr(10) if confidence_report else ""}=== 回答格式 ===
 最终回答必须严格采用以下六段式结构，且每一段都要有真实数据支撑：
     - 结论前置：先给出未来一段时间的持有判断，再说明一句原因。
     - 核心判断：给出未来一段时间的区间预判、仓位建议和关键时间点。
@@ -137,6 +151,7 @@ def _internal_format_summary_input(expression: str, context: dict | None = None)
     - 最后总结：用一段话收束“是否适合持有、为什么、适合什么风格”。
     - 如果缺少某一类数据，明确写“暂无数据”，不要补写臆测内容。
     - 不要只给短结论；单股持有类回答必须尽量贴近 `docs/examples1.md` 的分析密度与条理。
+    - 若支持证据与反对证据存在冲突，必须在对应段明确指出冲突与触发条件，不得只保留单边观点。
 请整合以上信息，按标准格式输出最终分析。若某类数据缺失，写“暂无数据”，不要编造。
 """.strip()
 

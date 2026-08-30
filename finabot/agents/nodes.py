@@ -8,6 +8,7 @@ from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, Tool
 from langchain_core.messages.tool import tool_call
 
 from finabot.agents.llm import SINGLE_AGENT_SYSTEM_PROMPT, litellm_glm_call, _debug_timing
+from finabot.agents.telemetry import SUBAGENT_METRICS, SubagentMetric
 from finabot.agents.state import AgentState
 from finabot.agents.analysts.market_analyst import _internal_call_market_analyst
 from finabot.agents.analysts.news_analyst import _internal_call_news_analyst
@@ -77,18 +78,42 @@ async def _call_with_timeout(coro, name: str, timeout: float | None = None) -> s
 
     On timeout the function returns a structured placeholder so the
     supervisor / summary manager can degrade confidence instead of
-    crashing the whole graph.
+    crashing the whole graph. Each call is recorded into the per-sub-agent
+    metrics registry (calls / failures / latency).
     """
     if timeout is None:
         timeout = float(os.getenv("FINABOT_SUBAGENT_TIMEOUT_SECONDS", "60"))
+    started = perf_counter()
     try:
-        return await asyncio.wait_for(coro, timeout=timeout)
+        result = await asyncio.wait_for(coro, timeout=timeout)
+        SUBAGENT_METRICS.record(
+            SubagentMetric(name=name, latency_ms=round((perf_counter() - started) * 1000, 2), success=True)
+        )
+        return result
     except asyncio.TimeoutError:
         _debug_timing(f"subagent:timeout name={name} timeout={timeout}s")
+        SUBAGENT_METRICS.record(
+            SubagentMetric(
+                name=name,
+                latency_ms=round((perf_counter() - started) * 1000, 2),
+                success=False,
+                error_type="TimeoutError",
+            )
+        )
         return (
             f"[subagent_timeout:{name}] 该子代理未能在 {timeout:.0f}s 内完成，"
             f"结论置信度降级。"
         )
+    except Exception as exc:
+        SUBAGENT_METRICS.record(
+            SubagentMetric(
+                name=name,
+                latency_ms=round((perf_counter() - started) * 1000, 2),
+                success=False,
+                error_type=type(exc).__name__,
+            )
+        )
+        raise
 
 
 async def _internal_invoke_sub_agent(name: str, state: AgentState, call: dict | None = None) -> tuple[str, dict]:
