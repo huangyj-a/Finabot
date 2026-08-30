@@ -10,6 +10,7 @@ from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
 from langchain_core.tools import tool
 
 from finabot.agents.llm import litellm_glm_call
+from finabot.agents.schema import maybe_append_instruction
 from finabot.agents.akshare_cache import format_akshare_data, get_cached_akshare_data
 
 
@@ -99,6 +100,7 @@ async def _internal_call_fundamental_analyst(
         f"=== 原始财务数据 ===\n{formatted_data}\n\n"
         f"请基于以上数据生成结构化基本面分析简报。"
     )
+    content = maybe_append_instruction("fundamental_analyst", content)
     messages = prompt.format_messages(messages=[HumanMessage(content=content)])
     response = await litellm_glm_call(messages=messages, stream_label="fundamental_analyst")
     return str(getattr(response, "content", "") or "")

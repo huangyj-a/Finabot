@@ -46,6 +46,7 @@ _RUN_SCOPED_STATE_DEFAULTS = {
     "bear_report": str,
     "fundamentals_report": str,
     "debate_context": dict,
+    "debate_mode": bool,
     "evidence_registry": dict,
     "claims": list,
     "risk_flags": list,

@@ -5,6 +5,7 @@ from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
 from langchain_core.tools import tool
 
 from finabot.agents.llm import litellm_glm_call
+from finabot.agents.schema import maybe_append_instruction
 
 
 _MARKET_ANALYST_PROMPT = """
@@ -32,7 +33,8 @@ def _internal_build_market_prompt() -> ChatPromptTemplate:
 
 async def _internal_call_market_analyst(expression: str) -> str:
     prompt = _internal_build_market_prompt()
-    messages = prompt.format_messages(messages=[HumanMessage(content=expression)])
+    content = maybe_append_instruction("market_analyst", expression)
+    messages = prompt.format_messages(messages=[HumanMessage(content=content)])
     response = await litellm_glm_call(messages=messages, stream_label="market_analyst")
     return str(getattr(response, "content", "") or "")
 

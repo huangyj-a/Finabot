@@ -16,6 +16,7 @@ from finabot.agents.researchers.researchers import _internal_call_researchers
 from finabot.agents.analysts.fundamental_analyst import _internal_call_fundamental_analyst
 from finabot.agents.evidence import register_subagent_evidence, register_tool_evidence
 from finabot.agents.refusal import classify_question
+from finabot.agents.schema import structured_state_update
 from finabot.tools.base import get_tools
 
 
@@ -94,32 +95,39 @@ async def _internal_invoke_sub_agent(name: str, state: AgentState, call: dict | 
     args = (call or {}).get("args", {}) or {}
 
     if name == "fundamental_analyst":
-        result = await _call_with_timeout(
+        raw = await _call_with_timeout(
             _internal_call_fundamental_analyst(expression, state.setdefault("akshare_cache", {})),
             name,
         )
-        return str(result), {"fundamentals_report": str(result)}
+        display, update = structured_state_update("fundamental_analyst", str(raw), state, state.get("as_of"))
+        update["fundamentals_report"] = display
+        return display, update
 
     if name == "market_analyst":
-        result = await _call_with_timeout(
+        raw = await _call_with_timeout(
             _internal_call_market_analyst(expression),
             name,
         )
-        return str(result), {"market_report": str(result)}
+        display, update = structured_state_update("market_analyst", str(raw), state, state.get("as_of"))
+        update["market_report"] = display
+        return display, update
 
     if name == "news_analyst":
-        result = await _call_with_timeout(
+        raw = await _call_with_timeout(
             _internal_call_news_analyst(expression, state.setdefault("akshare_cache", {})),
             name,
         )
-        return str(result), {"news_report": str(result)}
+        display, update = structured_state_update("news_analyst", str(raw), state, state.get("as_of"))
+        update["news_report"] = display
+        return display, update
 
     if name == "researchers":
-        result = await _call_with_timeout(
+        raw = await _call_with_timeout(
             _internal_call_researchers(expression),
             name,
         )
-        return str(result), {}
+        display, update = structured_state_update("researchers", str(raw), state, state.get("as_of"))
+        return display, update
 
     if name == "hold_analysis_pipeline":
         debate_mode = bool(args.get("debate_mode", False))
@@ -130,6 +138,7 @@ async def _internal_invoke_sub_agent(name: str, state: AgentState, call: dict | 
                     "market_report": state.get("market_report", ""),
                     "memories": state.get("memories", []),
                     "akshare_cache": state.setdefault("akshare_cache", {}),
+                    "as_of": state.get("as_of"),
                 },
                 debate_mode=debate_mode,
             ),
@@ -144,19 +153,25 @@ async def _internal_invoke_sub_agent(name: str, state: AgentState, call: dict | 
                 "bull_report": placeholder,
                 "bear_report": placeholder,
                 "summary_report": placeholder,
+                "claims": [],
+                "risk_flags": [],
             }
         else:
             result = pipeline_result
         content = result.get("debate_report") if debate_mode else result["summary_report"]
-        return (
-            str(content),
-            {
-                "fundamentals_report": result["fundamentals_report"],
-                "news_report": result["news_report"],
-                "bull_report": result["bull_report"],
-                "bear_report": result["bear_report"],
-            },
-        )
+        update: dict = {
+            "fundamentals_report": result["fundamentals_report"],
+            "news_report": result["news_report"],
+            "bull_report": result["bull_report"],
+            "bear_report": result["bear_report"],
+        }
+        claims = result.get("claims") or []
+        if claims:
+            update["claims"] = list(state.get("claims", []) or []) + list(claims)
+        risk_flags = result.get("risk_flags") or []
+        if risk_flags:
+            update["risk_flags"] = list(state.get("risk_flags", []) or []) + list(risk_flags)
+        return str(content), update
 
     raise ValueError(f"unknown sub-agent: {name}")
 

@@ -5,6 +5,7 @@ from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
 from langchain_core.tools import tool
 
 from finabot.agents.llm import litellm_glm_call
+from finabot.agents.schema import maybe_append_instruction
 
 
 _BULL_RESEARCHER_PROMPT = """
@@ -62,6 +63,7 @@ def _internal_format_expression(expression: str, debate_context: dict | None = N
 async def _internal_call_bull_researcher(expression: str, debate_context: dict | None = None) -> str:
     prompt = _internal_build_prompt()
     content = _internal_format_expression(expression, debate_context)
+    content = maybe_append_instruction("bull_researcher", content)
     messages = prompt.format_messages(messages=[HumanMessage(content=content)])
     response = await litellm_glm_call(messages=messages, stream_label="bull_researcher")
     return str(getattr(response, "content", "") or "")

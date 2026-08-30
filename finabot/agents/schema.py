@@ -42,19 +42,21 @@ class AnalystOutput(BaseModel):
 
 
 def structured_output_enabled() -> bool:
-    value = os.getenv("FINABOT_STRUCTURED_OUTPUT", "1").strip().lower()
-    return value not in {"0", "false", "no", "off"}
+    # 默认关闭：生产路径保持自由文本，评估时设 FINABOT_STRUCTURED_OUTPUT=1 显式开启。
+    value = os.getenv("FINABOT_STRUCTURED_OUTPUT", "0").strip().lower()
+    return value in {"1", "true", "yes", "on"}
 
 
 def structured_output_instruction(role: str) -> str:
     """Return the JSON-output instruction to append to a sub-agent prompt.
 
-    Used by sub-agents when ``structured_output_enabled()`` is on, so the
-    model emits an ``AnalystOutput`` JSON object. When the model still returns
-    free text, the tolerant parser degrades gracefully.
+    The model is asked to emit its normal prose analysis FIRST, then append a
+    JSON object. The parser keeps the prose for downstream agents and extracts
+    the JSON into structured state (claims/evidence/risk_flags). When the model
+    still returns free text without JSON, the tolerant parser degrades.
     """
     return f"""
-输出格式要求：请把你的结论以单个 JSON 对象输出，字段如下（role 固定为 "{role}"）：
+输出格式要求：先输出你的分析正文（保持原有结构与引用规范），正文之后另起一段，附上一个 JSON 对象用于结构化交接，字段如下（role 固定为 "{role}"）：
 {{
   "role": "{role}",
   "as_of": "数据截止日期，无则 null",
@@ -66,7 +68,14 @@ def structured_output_instruction(role: str) -> str:
   "unknowns": ["缺失/不确定的数据或信息"],
   "risk_flags": ["需要提示的风险点"]
 }}
-直接输出 JSON，不要输出 JSON 之外的任何解释文字。""".strip()
+JSON 必须是单个合法对象，正文与 JSON 之间不要有其他无关文字。""".strip()
+
+
+def maybe_append_instruction(role: str, content: str) -> str:
+    """Append the JSON-output instruction when structured mode is enabled."""
+    if not structured_output_enabled():
+        return content
+    return f"{content}\n\n{structured_output_instruction(role)}"
 
 
 def _extract_json_object(text: str) -> str | None:
@@ -101,16 +110,14 @@ def _extract_json_object(text: str) -> str | None:
 
 
 def parse_analyst_output(role: str, text: str, default_as_of: str | None = None) -> AnalystOutput:
-    """Parse a sub-agent response into ``AnalystOutput``.
+    """Parse a sub-agent response into ``AnalystOutput`` (pure parser).
 
-    If the model returned structured JSON, it is validated (best-effort).
-    Otherwise the raw text is wrapped as a single free-form claim with
-    ``confidence=low``. Never raises: a parsing failure must degrade, not
-    kill the round.
+    Always tries to extract and validate a JSON object; otherwise wraps the
+    raw text as a single free-form claim with ``confidence=low``. Never
+    raises. The ``FINABOT_STRUCTURED_OUTPUT`` toggle is NOT applied here — it
+    controls instruction injection and state extraction in higher layers
+    (``maybe_append_instruction`` / ``parse_subagent_result``).
     """
-    if not structured_output_enabled():
-        return _freeform(role, text, default_as_of)
-
     raw = str(text or "").strip()
     if not raw:
         return AnalystOutput(role=role, as_of=default_as_of, confidence="low", unknowns=["子代理无返回"])
@@ -156,3 +163,93 @@ def parse_analyst_outputs(role: str, text: str, default_as_of: str | None = None
     """Convenience: parse and return (text_to_store, structured_output)."""
     structured = parse_analyst_output(role, text, default_as_of)
     return analyst_output_to_text(structured), structured
+
+
+def parse_subagent_result(
+    role: str,
+    text: str,
+    default_as_of: str | None = None,
+) -> tuple[str, AnalystOutput]:
+    """Split a sub-agent response into (display_text, AnalystOutput).
+
+    When structured mode is on and the response contains a JSON block,
+    ``display_text`` is the prose with the JSON removed (so downstream quality
+    is unchanged), and the ``AnalystOutput`` carries claims/evidence/risk_flags
+    for state. Otherwise ``display_text`` is the full text (freeform degrade).
+
+    Used by graph node wrappers and ``_internal_invoke_sub_agent`` to feed
+    structured handoff data into ``AgentState`` without degrading prose.
+    """
+    raw = str(text or "")
+    if not structured_output_enabled():
+        return raw, _freeform(role, raw, default_as_of)
+
+    stripped = raw.strip()
+    if not stripped:
+        return "", AnalystOutput(
+            role=role, as_of=default_as_of, confidence="low", unknowns=["子代理无返回"]
+        )
+
+    json_text = _extract_json_object(stripped)
+    if json_text is not None:
+        try:
+            data = json.loads(json_text)
+            if isinstance(data, dict) and data.get("role"):
+                output = AnalystOutput.model_validate(data)
+                display = stripped.replace(json_text, "").strip()
+                if not display:
+                    display = analyst_output_to_text(output)
+                return display, output
+        except Exception:
+            pass
+
+    return stripped, _freeform(role, stripped, default_as_of)
+
+
+def collect_structured_state(
+    role: str,
+    text: str,
+    default_as_of: str | None = None,
+) -> tuple[str, list[dict[str, Any]], list[str]]:
+    """Return (display_text, claims, risk_flags) from a sub-agent response.
+
+    ``claims`` is a list of plain dicts (Pydantic models serialized), suitable
+    for accumulation into ``AgentState.claims``. ``risk_flags`` is a list of
+    strings. When structured mode is off or the model returned free text, both
+    lists are empty (or a single degraded claim) and display_text == text.
+    """
+    display, structured = parse_subagent_result(role, text, default_as_of)
+    if not structured_output_enabled():
+        # 关闭时不做结构化抽取，返回原样文本与空增量，避免噪音 claim
+        return str(text or ""), [], []
+    claims: list[dict[str, Any]] = []
+    for claim in structured.claims:
+        if hasattr(claim, "model_dump"):
+            claims.append(claim.model_dump())
+        elif isinstance(claim, dict):
+            claims.append(claim)
+        else:
+            claims.append({"text": str(claim), "kind": "inference"})
+    return display, claims, list(structured.risk_flags)
+
+
+def structured_state_update(
+    role: str,
+    text: str,
+    state: dict[str, Any] | None,
+    default_as_of: str | None = None,
+) -> tuple[str, dict[str, Any]]:
+    """Return (display_text, state_update) merging claims/risk_flags into state.
+
+    ``display_text`` is the prose (JSON removed) to store in report fields;
+    the update dict accumulates ``claims`` and ``risk_flags`` across sub-agents
+    (AgentState lists use replace semantics, so merge manually here).
+    """
+    state = state or {}
+    display, claims, risk_flags = collect_structured_state(role, text, default_as_of)
+    update: dict[str, Any] = {}
+    if claims:
+        update["claims"] = list(state.get("claims", []) or []) + claims
+    if risk_flags:
+        update["risk_flags"] = list(state.get("risk_flags", []) or []) + risk_flags
+    return display, update

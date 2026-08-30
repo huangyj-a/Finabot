@@ -298,7 +298,7 @@ run_meta: dict                      # llm_calls, cost, started_at, recursion_use
 13. ⏳ LLM Judge（新闻/反证/综合）+ 专家校准流程
 14. ✅ 单 Agent 对照组（`build_graph(single_agent=True)`：仅 supervisor+tool，`SINGLE_AGENT_SYSTEM_PROMPT` + `format_tools(single_agent=True)` 剔除子代理；`tests/test_single_agent_mode.py`）。六组消融 harness 化待续
 15. ⏳ 事实门 + 最高风险不变量 + 失败注入
-16. ⏳ 结构化输出 Schema 全面接入子代理 prompt（`schema.py` 已新增 `structured_output_instruction(role)` 就绪，子代理 prompt 尚未接线，`FINABOT_STRUCTURED_OUTPUT=1` 时降级为 low confidence）
+16. ✅ 结构化输出 Schema 全面接入子代理 prompt（`maybe_append_instruction(role, content)` 已接入 6 个子代理；`parse_subagent_result` 拆分「正文+JSON」保留正文给下游、抽取 claims/evidence/risk_flags 进 state；graph 节点包装 + `_internal_invoke_sub_agent` + hold_pipeline 子图三层接线；默认关闭，评估设 `FINABOT_STRUCTURED_OUTPUT=1` 开启）
 
 ### P2（W4 前收尾）
 

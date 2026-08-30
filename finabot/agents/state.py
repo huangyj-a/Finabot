@@ -14,6 +14,9 @@ class AgentState(dict):
     fundamentals_report: str
     akshare_cache: dict[str, Any]
     debate_context: dict[str, Any]
+    # 规则预路由（finabot.graph.router）写入：命中"持有+辩论"意图时为 True，
+    # 供 hold_analysis_pipeline 节点读取（LLM 路由路径则来自 tool_call 参数）。
+    debate_mode: bool
     # 评估/可追溯性字段（评估报告要求）：
     as_of: str | None
     # source_id -> {source, published_at, retrieved_at, url, priority, scope}

@@ -15,53 +15,79 @@ from finabot.agents.analysts import (
 )
 from finabot.agents.hold_pipeline import run_hold_analysis_pipeline
 from finabot.agents.researchers import researchers
+from finabot.agents.schema import structured_state_update
+from finabot.graph.router import classify_intent
+
+
+def _internal_router_node(state: AgentState) -> dict:
+    """规则预路由节点：总是写入 debate_mode（LangGraph 节点不可返回空更新），
+    命中持有分析且含辩论关键词时为 True。"""
+    question = _internal_latest_user_message(state)
+    _target, debate = classify_intent(question)
+    return {"debate_mode": debate}
+
+
+def _internal_route_intent(state: AgentState) -> str:
+    """条件边：规则命中直接进对应节点，否则回落到 LLM supervisor。"""
+    question = _internal_latest_user_message(state)
+    target, _ = classify_intent(question)
+    return target or "supervisor"
 
 
 async def _internal_market_analyst_node(state: AgentState):
     expression = _internal_latest_user_message(state)
-    result = await _call_with_timeout(
+    raw = await _call_with_timeout(
         market_analyst.ainvoke({"expression": expression}),
         "market_analyst",
     )
-    return {"messages": [AIMessage(content=str(result))], "market_report": str(result)}
+    display, update = structured_state_update("market_analyst", str(raw), state, state.get("as_of"))
+    update.update({"messages": [AIMessage(content=display)], "market_report": display})
+    return update
 
 
 async def _internal_fundamental_analyst_node(state: AgentState):
     expression = _internal_latest_user_message(state)
-    result = await _call_with_timeout(
+    raw = await _call_with_timeout(
         _internal_call_fundamental_analyst(expression, state.setdefault("akshare_cache", {})),
         "fundamental_analyst",
     )
-    return {"messages": [AIMessage(content=str(result))], "fundamentals_report": str(result)}
+    display, update = structured_state_update("fundamental_analyst", str(raw), state, state.get("as_of"))
+    update.update({"messages": [AIMessage(content=display)], "fundamentals_report": display})
+    return update
 
 
 async def _internal_news_analyst_node(state: AgentState):
     expression = _internal_latest_user_message(state)
-    result = await _call_with_timeout(
+    raw = await _call_with_timeout(
         _internal_call_news_analyst(expression, state.setdefault("akshare_cache", {})),
         "news_analyst",
     )
-    return {"messages": [AIMessage(content=str(result))], "news_report": str(result)}
+    display, update = structured_state_update("news_analyst", str(raw), state, state.get("as_of"))
+    update.update({"messages": [AIMessage(content=display)], "news_report": display})
+    return update
 
 
 async def _internal_researchers_node(state: AgentState):
     expression = _internal_latest_user_message(state)
-    result = await _call_with_timeout(
+    raw = await _call_with_timeout(
         researchers.ainvoke({"expression": expression}),
         "researchers",
     )
-    return {"messages": [AIMessage(content=str(result))]}
+    display, update = structured_state_update("researchers", str(raw), state, state.get("as_of"))
+    update.update({"messages": [AIMessage(content=display)]})
+    return update
 
 
 def _internal_extract_debate_mode(state: AgentState) -> bool:
-    """从 supervisor 最近一次对 hold_analysis_pipeline 的 tool_call 中读取 debate_mode。"""
+    """读取 debate_mode：优先 supervisor tool_call 参数（LLM 路由路径），
+    其次规则路由节点写入的状态（router 短路路径）。"""
     last = state["messages"][-1]
     for tool_call in getattr(last, "tool_calls", []) or []:
         name = tool_call.get("name") if isinstance(tool_call, dict) else getattr(tool_call, "name", "")
         if name == "hold_analysis_pipeline":
             args = tool_call.get("args") if isinstance(tool_call, dict) else getattr(tool_call, "args", {})
             return bool((args or {}).get("debate_mode", False))
-    return False
+    return bool(state.get("debate_mode", False))
 
 
 async def _internal_hold_analysis_pipeline_node(state: AgentState):
@@ -74,6 +100,7 @@ async def _internal_hold_analysis_pipeline_node(state: AgentState):
                 "market_report": state.get("market_report", ""),
                 "memories": state.get("memories", []),
                 "akshare_cache": state.setdefault("akshare_cache", {}),
+                "as_of": state.get("as_of"),
             },
             debate_mode=debate_mode,
         ),
@@ -87,17 +114,26 @@ async def _internal_hold_analysis_pipeline_node(state: AgentState):
             "bull_report": placeholder,
             "bear_report": placeholder,
             "summary_report": placeholder,
+            "claims": [],
+            "risk_flags": [],
         }
     else:
         result = pipeline_result
     content = result.get("debate_report") if debate_mode else result["summary_report"]
-    return {
+    update: dict = {
         "messages": [AIMessage(content=str(content))],
         "fundamentals_report": result["fundamentals_report"],
         "news_report": result["news_report"],
         "bull_report": result["bull_report"],
         "bear_report": result["bear_report"],
     }
+    claims = result.get("claims") or []
+    if claims:
+        update["claims"] = list(state.get("claims", []) or []) + list(claims)
+    risk_flags = result.get("risk_flags") or []
+    if risk_flags:
+        update["risk_flags"] = list(state.get("risk_flags", []) or []) + list(risk_flags)
+    return update
 
 
 def _internal_make_route_supervisor(single_agent: bool):
@@ -140,8 +176,6 @@ def build_graph(checkpointer=None, single_agent: bool = False):
         g.add_node("hold_analysis_pipeline", _internal_hold_analysis_pipeline_node)
     g.add_node("tool", call_tool_node)
 
-    g.add_edge(START, "supervisor")
-
     route_map = {
         "tool": "tool",
         "end": END,
@@ -160,6 +194,24 @@ def build_graph(checkpointer=None, single_agent: bool = False):
         _internal_make_route_supervisor(single_agent),
         route_map,
     )
+
+    if not single_agent:
+        # 规则预路由：高置信意图（持有分析 / 市场分析）直接短路进对应节点，
+        # 省一次 supervisor LLM 往返；其余回落 LLM supervisor。
+        g.add_node("router", _internal_router_node)
+        g.add_edge(START, "router")
+        g.add_conditional_edges(
+            "router",
+            _internal_route_intent,
+            {
+                "hold_analysis_pipeline": "hold_analysis_pipeline",
+                "market_analyst": "market_analyst",
+                "supervisor": "supervisor",
+            },
+        )
+    else:
+        # 单 Agent 对照组：不挂规则路由，保持 START → supervisor 原拓扑
+        g.add_edge(START, "supervisor")
 
     if not single_agent:
         g.add_edge("market_analyst", "supervisor")

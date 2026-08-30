@@ -25,6 +25,7 @@ from finabot.agents.analysts.fundamental_analyst import _internal_call_fundament
 from finabot.agents.analysts.news_analyst import _internal_call_news_analyst
 from finabot.agents.managers.manager import _internal_call_summary_manager
 from finabot.agents.researchers import _internal_call_bear_researcher, _internal_call_bull_researcher
+from finabot.agents.schema import collect_structured_state
 
 KEY_SECTIONS = [
     "stock_conclusion",
@@ -51,6 +52,11 @@ class _HoldPipelineState(TypedDict):
     bull_report: str
     bear_report: str
     summary_report: str
+    as_of: str | None
+    # 结构化交接：各分析节点抽取的 claims / risk_flags（operator.add 累加，
+    # 保证 bull/bear 并行扇出互不覆盖）。
+    claims: Annotated[list, operator.add]
+    risk_flags: Annotated[list, operator.add]
     # 每个节点把自己的产出作为 AIMessage 追加进该通道，供父图 astream(subgraphs=True)
     # 实时透出"新闻完成 → 看涨 → 看跌 → 结论"的分步进度（不污染父图持久化状态）。
     messages: Annotated[list, operator.add]
@@ -72,26 +78,50 @@ async def _fetch_node(state: _HoldPipelineState) -> dict[str, str]:
     }
 
 
-async def _fundamental_node(state: _HoldPipelineState) -> dict[str, str]:
+async def _fundamental_node(state: _HoldPipelineState) -> dict[str, Any]:
     result = await _internal_call_fundamental_analyst(state["expression"], state["akshare_cache"])
-    return {"fundamentals_report": result, "messages": [AIMessage(content=result or "")]}
+    display, claims, risk_flags = collect_structured_state("fundamental_analyst", result, state.get("as_of"))
+    update: dict[str, Any] = {"fundamentals_report": display, "messages": [AIMessage(content=display or "")]}
+    if claims:
+        update["claims"] = claims
+    if risk_flags:
+        update["risk_flags"] = risk_flags
+    return update
 
 
-async def _news_node(state: _HoldPipelineState) -> dict[str, str]:
+async def _news_node(state: _HoldPipelineState) -> dict[str, Any]:
     result = await _internal_call_news_analyst(state["expression"], state["akshare_cache"])
-    return {"news_report": result, "messages": [AIMessage(content=result or "")]}
+    display, claims, risk_flags = collect_structured_state("news_analyst", result, state.get("as_of"))
+    update: dict[str, Any] = {"news_report": display, "messages": [AIMessage(content=display or "")]}
+    if claims:
+        update["claims"] = claims
+    if risk_flags:
+        update["risk_flags"] = risk_flags
+    return update
 
 
-async def _bull_node(state: _HoldPipelineState) -> dict[str, str]:
+async def _bull_node(state: _HoldPipelineState) -> dict[str, Any]:
     debate_context = {"news_report": state.get("news_report", "")}
     result = await _internal_call_bull_researcher(state["expression"], debate_context)
-    return {"bull_report": result, "messages": [AIMessage(content=result or "")]}
+    display, claims, risk_flags = collect_structured_state("bull_researcher", result, state.get("as_of"))
+    update: dict[str, Any] = {"bull_report": display, "messages": [AIMessage(content=display or "")]}
+    if claims:
+        update["claims"] = claims
+    if risk_flags:
+        update["risk_flags"] = risk_flags
+    return update
 
 
-async def _bear_node(state: _HoldPipelineState) -> dict[str, str]:
+async def _bear_node(state: _HoldPipelineState) -> dict[str, Any]:
     debate_context = {"news_report": state.get("news_report", "")}
     result = await _internal_call_bear_researcher(state["expression"], debate_context)
-    return {"bear_report": result, "messages": [AIMessage(content=result or "")]}
+    display, claims, risk_flags = collect_structured_state("bear_researcher", result, state.get("as_of"))
+    update: dict[str, Any] = {"bear_report": display, "messages": [AIMessage(content=display or "")]}
+    if claims:
+        update["claims"] = claims
+    if risk_flags:
+        update["risk_flags"] = risk_flags
+    return update
 
 
 async def _summary_node(state: _HoldPipelineState) -> dict[str, str]:
@@ -142,11 +172,12 @@ async def run_hold_analysis_pipeline(
     expression: str,
     state_context: dict[str, Any] | None = None,
     debate_mode: bool = False,
-) -> dict[str, str]:
+) -> dict[str, Any]:
     """Fundamental → news → bull+bear (parallel) → summary as a compiled subgraph.
 
     debate_mode=True 时额外返回 debate_report：把新闻、看涨、看跌与综合结论
     拼接成一份可分步展示的稿件，供 supervisor 直接转述给用户。
+    结构化模式开启时额外返回 claims / risk_flags（各分析节点抽取的结构化交接）。
     """
 
     state_context = state_context or {}
@@ -163,19 +194,24 @@ async def run_hold_analysis_pipeline(
         "bull_report": "",
         "bear_report": "",
         "summary_report": "",
+        "as_of": state_context.get("as_of"),
+        "claims": [],
+        "risk_flags": [],
         "messages": [],
     }
 
     result = await _HOLD_SUBGRAPH.ainvoke(initial)
 
     final_fundamentals = result.get("fundamentals_report") or result.get("fundamentals_report_raw") or ""
-    out: dict[str, str] = {
+    out: dict[str, Any] = {
         "fundamentals_report": final_fundamentals,
         "news_report": result.get("news_report", ""),
         "bull_report": result.get("bull_report", ""),
         "bear_report": result.get("bear_report", ""),
         "confidence_report": result.get("confidence_report", ""),
         "summary_report": result.get("summary_report", ""),
+        "claims": result.get("claims", []),
+        "risk_flags": result.get("risk_flags", []),
     }
     if debate_mode:
         out["debate_report"] = _internal_build_debate_report(
