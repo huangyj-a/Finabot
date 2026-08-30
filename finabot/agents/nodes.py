@@ -30,6 +30,19 @@ _TOOL_CALL_TEXT_PATTERN = re.compile(
     re.IGNORECASE | re.DOTALL,
 )
 
+# 多工具/多参数文本回退解析：GLM 偶尔把工具调用当纯文本回显，可能是
+# 单个或多个 `<tool_call>` 块，每块含多对 `<arg_key>/<arg_value>`。
+# 工具名可在块前（`name <tool_call>...`）或块内 `<arg_key>` 之前。
+_TOOL_CALL_BLOCK_WITH_NAME_PATTERN = re.compile(
+    r"(?:(?P<name>[A-Za-z_][\w\-]*)\s*)?<tool_call>(?P<body>.*?)</tool_call>",
+    re.IGNORECASE | re.DOTALL,
+)
+_ARG_PAIR_PATTERN = re.compile(
+    r"<arg_key>\s*(?P<key>[^<]+?)\s*</arg_key>\s*<arg_value>\s*(?P<value>.*?)\s*</arg_value>",
+    re.IGNORECASE | re.DOTALL,
+)
+_FUNCTION_NAME_PATTERN = re.compile(r"<function>\s*(?P<name>[^<]+?)\s*</function>", re.IGNORECASE)
+
 
 def _internal_normalize_tool_name(name) -> str:
     if name is None:
@@ -236,23 +249,57 @@ def normalize_tool_call(call):
     )
 
 
+def _internal_parse_tool_call_body(name: str, body: str):
+    """解析工具调用体（含参数对），返回 tool_call 或 None。
+
+    ``name`` 为已从块前捕获的工具名；为空时回退：`<function>` 包裹 →
+    body 内首个 `<arg_key>` 前的最后一个函数式标识符。
+    """
+    arguments: dict[str, str] = {}
+    for pair in _ARG_PAIR_PATTERN.finditer(body):
+        key = pair.group("key").strip()
+        value = pair.group("value").strip()
+        if key:
+            arguments[key] = value
+    if not arguments:
+        return None
+
+    if not name:
+        fn_match = _FUNCTION_NAME_PATTERN.search(body)
+        if fn_match:
+            name = fn_match.group("name").strip()
+    if not name:
+        before_args = body.split("<arg_key", 1)[0]
+        tokens = re.findall(r"[A-Za-z_][\w\-]*", before_args)
+        name = tokens[-1].strip() if tokens else ""
+    if not name:
+        return None
+    return tool_call(name=name, args=arguments, id=None)
+
+
 def extract_tool_calls_from_content(content: str):
-    """Fallback parser for assistant text that contains serialized tool markup."""
+    """Fallback parser for assistant text that contains serialized tool markup.
+
+    支持多个 `<tool_call>` 块（工具名可在块前或块内 `<arg_key>` 之前）、每块多对
+    `<arg_key>/<arg_value>`；无 `<tool_call>` 包裹时回退为对整个内容解析单个
+    工具调用（兼容旧单工具行为）。
+    """
     if not content:
         return []
 
-    match = _TOOL_CALL_TEXT_PATTERN.search(content)
-    if not match:
-        return []
+    calls = []
+    for match in _TOOL_CALL_BLOCK_WITH_NAME_PATTERN.finditer(content):
+        call = _internal_parse_tool_call_body(
+            (match.group("name") or "").strip(),
+            match.group("body"),
+        )
+        if call is not None:
+            calls.append(call)
+    if calls:
+        return calls
 
-    tool_name = match.group("name").strip()
-    arg_key = match.group("key").strip()
-    arg_value = match.group("value").strip()
-    if not tool_name or not arg_key:
-        return []
-
-    arguments = {arg_key: arg_value}
-    return [tool_call(name=tool_name, args=arguments, id=None)]
+    call = _internal_parse_tool_call_body("", content)
+    return [call] if call is not None else []
 
 
 def _strip_tool_call_markup(text: str) -> str:

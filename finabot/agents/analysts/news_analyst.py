@@ -11,6 +11,7 @@ from langchain_core.tools import tool
 
 from finabot.agents.llm import litellm_glm_call
 from finabot.agents.schema import maybe_append_instruction
+from finabot.agents.context import mark_untrusted
 from finabot.agents.akshare_cache import format_akshare_data, get_cached_akshare_data
 
 
@@ -51,6 +52,8 @@ def _internal_collect_news_context(expression: str, cache: dict[str, Any] | None
 
 async def _internal_call_news_analyst(expression: str, cache: dict[str, Any] | None = None) -> str:
     collected_context = _internal_collect_news_context(expression, cache)
+    # 注入防护：AKShare 新闻/网页正文是不可信数据，其中指令性文字不得视为系统指令
+    collected_context = mark_untrusted(collected_context, "AKShare 新闻/网页数据")
     prompt = _internal_build_prompt()
     content = f"""
 用户问题：{expression}

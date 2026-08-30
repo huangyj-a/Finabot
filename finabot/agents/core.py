@@ -106,6 +106,11 @@ class Agent:
     def _thread_config(self, key: str) -> dict:
         return {"configurable": {"thread_id": key}}
 
+    def _invoke_config(self, key: str) -> dict:
+        """invoke/astream 配置：thread_id + 显式 recursion_limit（防止无限循环）。"""
+        limit = max(1, int(os.getenv("FINABOT_MAX_RECURSION", "16")))
+        return {"configurable": {"thread_id": key}, "recursion_limit": limit}
+
     async def _cleanup_thread(self, key: str) -> None:
         """删除一个会话：checkpointer 线程 + 锁 + TTL 追踪。"""
         self._thread_last_used.pop(key, None)
@@ -203,7 +208,7 @@ class Agent:
 
         sink_token = set_token_sink(_publish_token)
         try:
-            async for namespace, chunk in self.graph.astream(input_state, config=config, subgraphs=True):
+            async for namespace, chunk in self.graph.astream(input_state, config=self._invoke_config(key), subgraphs=True):
                 for _node_name, node_update in chunk.items():
                     if not namespace:
                         # 顶层图节点：最终状态以 checkpointer 快照为准，跳过

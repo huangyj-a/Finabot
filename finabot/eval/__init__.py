@@ -17,4 +17,5 @@ __all__ = [
     "harness",
     "llm_judge",
     "ablation",
+    "sources",
 ]

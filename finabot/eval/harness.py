@@ -67,7 +67,10 @@ async def _default_run_one(task: EvalTask, ctx: dict[str, Any]) -> tuple[str, di
             if field_name not in state:
                 state[field_name] = factory()
 
-        final = await graph.ainvoke(state)
+        final = await graph.ainvoke(
+            state,
+            config={"recursion_limit": max(1, int(os.getenv("FINABOT_MAX_RECURSION", "16")))},
+        )
         reply = final["messages"][-1].content
     finally:
         if patcher is not None:

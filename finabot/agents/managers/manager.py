@@ -44,6 +44,7 @@ _SUMMARY_MANAGER_PROMPT = """
 关键数据必须写明日期或时间来源，例如 `as_of`、`latest_trade_date`、`fetch_time`、新闻发布时间；缺少日期时必须写“时间未知”。
 如果 `is_stale=true` 或 `data_lag_days>7`，必须降低结论置信度，并在风险段明确提示数据过时。
 如果新闻数据为“无法获取”或 `has_direct_news=false`，不得写“最新新闻显示”，只能写“暂无直接新闻数据”。
+最高风险回显：如果输入中包含“最高风险清单”，必须在“看空/风险逻辑”段逐条回显清单中的最高级别风险，不得无解释地省略、淡化或让最高风险消失。
 估值、PE、PEG、机构评级、资金流、公告、研报等判断必须优先引用 AKShare 工具数据；如果对应工具没有返回数据，不得自行给出具体数值。
 基本面交叉验证：技术面定位（均线/区间）之外，必须纳入估值维度（TTM PE/PB 及历史分位，作为下方安全垫/支撑解释）与财务维度（盈利/毛利/营收增速），用 stock_a_valuation、stock_a_financial_indicators 的数据交叉验证；批价（如飞天批价）、渠道库存、提价/出厂价上调预期、业绩（如 Q3 报表）等若无直接工具数据，须列为关键定性观察点并标注“数据缺失/来源未知”。
 情景推演补全：乐观情景的触发条件须包含“提价/出厂价上调预期”；悲观情景的风险须包含“业绩不及预期（动销走弱、报表继续承压）”而不仅是大盘系统性回调。
@@ -96,6 +97,14 @@ def _internal_format_summary_input(expression: str, context: dict | None = None)
     )
     memories = context.get("memories") or []
     confidence_report = context.get("confidence_report") or ""
+    risk_flags = context.get("risk_flags") or []
+
+    risk_section = ""
+    if risk_flags:
+        risk_section = (
+            "=== 最高风险清单（必须在“看空/风险逻辑”段逐条回显，不得无解释消失）===\n"
+            + "\n".join(f"- {flag}" for flag in risk_flags)
+        )
 
     return f"""
 用户问题：{expression}
@@ -118,7 +127,7 @@ def _internal_format_summary_input(expression: str, context: dict | None = None)
 === 用户记忆 ===
 {memories}
 
-{confidence_report + chr(10) if confidence_report else ""}=== 回答格式 ===
+{risk_section + chr(10) if risk_section else ""}{confidence_report + chr(10) if confidence_report else ""}=== 回答格式 ===
 最终回答必须严格采用以下六段式结构，且每一段都要有真实数据支撑：
     - 结论前置：先给出未来一段时间的持有判断，再说明一句原因。
     - 核心判断：给出未来一段时间的区间预判、仓位建议和关键时间点。

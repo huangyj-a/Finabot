@@ -138,6 +138,7 @@ async def _summary_node(state: _HoldPipelineState) -> dict[str, str]:
             "confidence_report": state.get("confidence_report", ""),
             "memories": state.get("memories", []),
             "akshare_cache": state["akshare_cache"],
+            "risk_flags": state.get("risk_flags", []),
         },
     )
     return {"summary_report": summary_report, "messages": [AIMessage(content=summary_report or "")]}

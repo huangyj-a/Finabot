@@ -27,6 +27,26 @@ def test_summary_input_includes_all_analysis_sections(monkeypatch):
     assert "用户偏稳健" in content
 
 
+def test_summary_input_echoes_risk_flags(monkeypatch):
+    from finabot.agents.managers import manager
+
+    monkeypatch.setattr(manager, "_internal_collect_fundamental_context", lambda expression, cache=None: "基本面数据")
+    content = manager._internal_format_summary_input(
+        "贵州茅台适合持有吗",
+        {"risk_flags": ["估值过高", "批价波动"]},
+    )
+
+    assert "最高风险清单" in content
+    assert "估值过高" in content
+    assert "批价波动" in content
+    assert "不得无解释消失" in content
+
+
+def test_summary_prompt_requires_risk_echo():
+    from finabot.agents.managers.manager import _SUMMARY_MANAGER_PROMPT
+    assert "最高风险回显" in _SUMMARY_MANAGER_PROMPT
+
+
 def test_hold_pipeline_node_writes_reports_back_to_state(monkeypatch):
     import asyncio
 
