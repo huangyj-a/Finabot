@@ -34,3 +34,6 @@ outputs/
 # 评估脚本的 LLM 输出缓存（运行时产物，非源码）
 scripts/.eval_cache/
 scripts/.eval_cache_v2/
+
+# 评估运行报告（运行时产物，可重新生成）
+eval/reports/*.json

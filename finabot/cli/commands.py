@@ -217,16 +217,16 @@ def eval_run(
 
     from finabot.eval.harness import EvalRunner
     from finabot.eval.metrics import pass_all_n, summarize_trials
-    from finabot.eval.tasks import find_task_root, load_task, load_tasks
+    from finabot.eval.tasks import find_task_root, load_task_by_id, load_tasks
 
     root = find_task_root()
-    suite_dir = root.parent / suite
+    suite_dir = root / suite  # root 已是 eval/tasks
     if task_id:
-        path = suite_dir / f"{task_id}.json"
-        if not path.is_file():
-            _safe_echo(f"任务不存在：{path}", err=True)
+        task = load_task_by_id(task_id)
+        if task is None:
+            _safe_echo(f"任务不存在：{task_id}", err=True)
             raise typer.Exit(1)
-        tasks = [load_task(path)]
+        tasks = [task]
     else:
         tasks = load_tasks(suite_dir)
 

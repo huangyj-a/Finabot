@@ -16,7 +16,7 @@ def test_load_task_parses_all_fields():
     task = load_task(path)
     assert task.task_id == "t001"
     assert task.suite == "dev"
-    assert task.as_of == "2026-05-29"
+    assert task.as_of  # as_of 为采样数据日期，非空即可（具体值随快照更新）
     assert task.question
     assert task.hard_gates
     assert task.graders

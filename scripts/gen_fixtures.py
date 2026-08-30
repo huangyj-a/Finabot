@@ -61,14 +61,20 @@ def _market_prefix(code: str) -> str:
 
 
 def _history_sampler(ak, code: str):
-    """历史行情：优先 eastmoney，失败回退腾讯源（与工具层 fallback 一致）。"""
+    """历史行情：优先 eastmoney，失败回退腾讯源（与工具层 fallback 一致）。
+
+    统一转为降序（最新在前），匹配 eastmoney 原生输出顺序，避免工具层
+    ``head(top_n)`` 取到旧数据。
+    """
 
     def _fetch():
         end = datetime.now().strftime("%Y%m%d")
         try:
-            return ak.stock_zh_a_hist(symbol=code, start_date="20240101", end_date=end, adjust="qfq")
+            df = ak.stock_zh_a_hist(symbol=code, start_date="20240101", end_date=end, adjust="qfq")
         except Exception:
-            return ak.stock_zh_a_hist_tx(symbol=_market_prefix(code), start_date="20240101", end_date=end, adjust="qfq")
+            df = ak.stock_zh_a_hist_tx(symbol=_market_prefix(code), start_date="20240101", end_date=end, adjust="qfq")
+        date_col = "日期" if "日期" in getattr(df, "columns", []) else "date"
+        return df.sort_values(by=date_col, ascending=False).reset_index(drop=True)
 
     return _fetch
 
@@ -122,7 +128,7 @@ def sample_market(ak, market: str, code: str) -> dict[str, object]:
     fetched: dict[str, object] = {}
     for name, fn in samplers(ak, code).items():
         try:
-            # 250 行 ≈ 一年交易日，足以计算 20/60 日涨跌幅与均线
+            # 250 行 ≈ 一年交易日；各 fetcher 已统一降序（最新在前），head 取最新
             fetched[name] = records_from_frame(fn(), limit=250)
         except Exception:
             fetched[name] = []

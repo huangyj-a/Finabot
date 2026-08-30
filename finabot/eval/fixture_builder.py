@@ -11,15 +11,24 @@ import json
 from typing import Any
 
 
-def records_from_frame(df, limit: int = 60) -> list[dict[str, Any]]:
+def records_from_frame(df, limit: int = 60, from_tail: bool = False) -> list[dict[str, Any]]:
     """Convert a pandas DataFrame to a JSON-safe list of records.
 
     NaN/Inf are serialized as ``null`` by pandas ``to_json``, so the result is
-    always valid JSON. Returns [] for empty/None frames.
+    always valid JSON. Datetime/date columns are serialized as ISO strings
+    (``date_format='iso'``) so downstream date parsing gets ``YYYY-MM-DD``
+    rather than epoch milliseconds.
+
+    ``from_tail=True`` takes the *latest* ``limit`` rows (for ascending
+    time-series like history), otherwise the first ``limit`` rows.
+    Returns [] for empty/None frames.
     """
     if df is None or getattr(df, "empty", True):
         return []
-    return json.loads(df.head(int(limit)).to_json(orient="records", force_ascii=False))
+    subset = df.tail(int(limit)) if from_tail else df.head(int(limit))
+    return json.loads(
+        subset.to_json(orient="records", date_format="iso", force_ascii=False)
+    )
 
 
 def assemble_snapshot(meta: dict[str, Any], fetches: dict[str, Any]) -> dict[str, Any]:
