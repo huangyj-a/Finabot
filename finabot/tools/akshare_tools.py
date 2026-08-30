@@ -4,22 +4,16 @@ from __future__ import annotations
 
 import contextlib
 import json
-import os
+import math
 import re
 from datetime import datetime, timedelta
+from numbers import Real
 
 import akshare as ak
-import requests
 from langchain_core.tools import tool
+from pandas.api.types import is_string_dtype
 
-try:
-    from akshare.utils.context import get_proxies as ak_get_proxies, set_proxies as ak_set_proxies
-except Exception:  # pragma: no cover - test stubs may expose akshare as a simple module
-    def ak_get_proxies():
-        return None
-
-    def ak_set_proxies(_proxies):
-        return None
+from finabot.utils.clock import now as clock_now
 
 
 _CLASSIC_INDEX_NAMES = [
@@ -68,79 +62,32 @@ _CLASSIC_HK_INDEX_NAMES = [
     "恒生高股息率指数",
 ]
 
-_PROXY_ENV_KEYS = (
-    "HTTP_PROXY",
-    "HTTPS_PROXY",
-    "ALL_PROXY",
-    "NO_PROXY",
-    "http_proxy",
-    "https_proxy",
-    "all_proxy",
-    "no_proxy",
-)
-
-
 @contextlib.contextmanager
 def _internal_without_proxy_env():
-    original = {}
-    original_ak_proxies = ak_get_proxies()
-    original_requests_get = requests.get
-    original_requests_post = requests.post
-    original_session_request = requests.Session.request
+    """Compatibility wrapper that deliberately avoids global network mutation.
 
-    def _internal_force_no_proxy(callable_obj):
-        def _wrapper(url, *args, **kwargs):
-            if kwargs.get("proxies") is None:
-                kwargs["proxies"] = {}
-            return callable_obj(url, *args, **kwargs)
+    AKShare and requests inherit the caller's normal proxy configuration. Older
+    versions of this helper temporarily rewrote process environment variables,
+    requests module functions, and AKShare global proxy state, which was unsafe
+    when different sessions fetched market data concurrently.
+    """
 
-        return _wrapper
-
-    def _internal_force_no_proxy_session(callable_obj):
-        def _wrapper(self, method, url, *args, **kwargs):
-            original_trust_env = getattr(self, "trust_env", None)
-            original_proxies = getattr(self, "proxies", None)
-            try:
-                if hasattr(self, "trust_env"):
-                    self.trust_env = False
-                if hasattr(self, "proxies"):
-                    self.proxies = {}
-                if kwargs.get("proxies") is None:
-                    kwargs["proxies"] = {}
-                return callable_obj(self, method, url, *args, **kwargs)
-            finally:
-                if hasattr(self, "trust_env") and original_trust_env is not None:
-                    self.trust_env = original_trust_env
-                if hasattr(self, "proxies") and original_proxies is not None:
-                    self.proxies = original_proxies
-
-        return _wrapper
-
-    for key in _PROXY_ENV_KEYS:
-        if key in os.environ:
-            original[key] = os.environ.pop(key)
-    try:
-        ak_set_proxies({})
-        requests.get = _internal_force_no_proxy(original_requests_get)
-        requests.post = _internal_force_no_proxy(original_requests_post)
-        requests.Session.request = _internal_force_no_proxy_session(original_session_request)
-        yield
-    finally:
-        for key, value in original.items():
-            os.environ[key] = value
-        ak_set_proxies(original_ak_proxies)
-        requests.get = original_requests_get
-        requests.post = original_requests_post
-        requests.Session.request = original_session_request
+    yield
 
 
 def _internal_normalize_date(value: str | None) -> str:
-    if not value:
-        return datetime.now().strftime("%Y%m%d")
+    if value is None or not str(value).strip():
+        return clock_now().strftime("%Y%m%d")
+
     cleaned = re.sub(r"[^0-9]", "", str(value))
-    if len(cleaned) == 8:
-        return cleaned
-    return datetime.now().strftime("%Y%m%d")
+    if len(cleaned) != 8:
+        raise ValueError(f"invalid date: {value}; expected YYYYMMDD or YYYY-MM-DD")
+
+    try:
+        parsed = datetime.strptime(cleaned, "%Y%m%d")
+    except ValueError as exc:
+        raise ValueError(f"invalid calendar date: {value}") from exc
+    return parsed.strftime("%Y%m%d")
 
 
 def _internal_keyword_mask(df, keyword: str | None):
@@ -155,7 +102,7 @@ def _internal_keyword_mask(df, keyword: str | None):
     for column in getattr(df, "columns", []):
         try:
             series = df[column]
-            if getattr(series, "dtype", None) == object:
+            if is_string_dtype(getattr(series, "dtype", None)):
                 text_columns.append(column)
             elif any(token in str(column).lower() for token in ["name", "code", "symbol", "代码", "名称", "代码"]):
                 text_columns.append(column)
@@ -168,7 +115,12 @@ def _internal_keyword_mask(df, keyword: str | None):
     mask = None
     for column in text_columns:
         try:
-            column_mask = df[column].astype(str).str.contains(keyword_text, case=False, na=False)
+            column_mask = df[column].astype(str).str.contains(
+                keyword_text,
+                case=False,
+                na=False,
+                regex=False,
+            )
         except Exception:
             continue
         mask = column_mask if mask is None else (mask | column_mask)
@@ -176,8 +128,7 @@ def _internal_keyword_mask(df, keyword: str | None):
     if mask is None:
         return df
 
-    filtered = df[mask]
-    return filtered if not filtered.empty else df
+    return df[mask]
 
 
 def _internal_name_filter(df, target_names: list[str], keyword: str | None = None, top_n: int = 20):
@@ -193,7 +144,12 @@ def _internal_name_filter(df, target_names: list[str], keyword: str | None = Non
         if keyword_text:
             filtered = filtered[
                 filtered.astype(str).apply(
-                    lambda row: row.str.contains(keyword_text, case=False, na=False).any(),
+                    lambda row: row.str.contains(
+                keyword_text,
+                case=False,
+                na=False,
+                regex=False,
+            ).any(),
                     axis=1,
                 )
             ]
@@ -204,6 +160,20 @@ def _internal_name_filter(df, target_names: list[str], keyword: str | None = Non
     return filtered.head(max(1, min(int(top_n or 20), 50)))
 
 
+def _internal_json_safe(value):
+    if isinstance(value, dict):
+        return {str(key): _internal_json_safe(item) for key, item in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_internal_json_safe(item) for item in value]
+    if isinstance(value, Real):
+        try:
+            if not math.isfinite(float(value)):
+                return None
+        except (TypeError, ValueError):
+            pass
+    return value
+
+
 def _internal_dataframe_payload(tool_name: str, df, keyword: str | None = None, top_n: int = 20) -> str:
     if df is None:
         return json.dumps({"tool": tool_name, "error": "no data returned"}, ensure_ascii=False)
@@ -211,6 +181,7 @@ def _internal_dataframe_payload(tool_name: str, df, keyword: str | None = None, 
     filtered = _internal_keyword_mask(df, keyword)
     limit = max(1, min(int(top_n or 20), 50))
     sample = filtered.head(limit).to_dict(orient="records") if not getattr(filtered, "empty", True) else []
+    sample = _internal_json_safe(sample)
 
     payload = {
         "tool": tool_name,
@@ -235,15 +206,15 @@ def _internal_format_single_row(df, tool_name: str, symbol: str, top_n: int = 5)
         return {"tool": tool_name, "symbol": symbol, "rows": 0, "columns": [], "sample": []}
 
     filtered = _internal_keyword_mask(df, symbol)
-    if getattr(filtered, "empty", True):
-        filtered = df.head(max(1, min(int(top_n or 5), 10)))
 
     return {
         "tool": tool_name,
         "symbol": symbol,
         "rows": int(getattr(filtered, "shape", [0])[0]),
         "columns": list(getattr(filtered, "columns", [])),
-        "sample": filtered.head(max(1, min(int(top_n or 5), 10))).to_dict(orient="records"),
+        "sample": _internal_json_safe(
+            filtered.head(max(1, min(int(top_n or 5), 10))).to_dict(orient="records")
+        ),
     }
 
 
@@ -265,7 +236,9 @@ def _internal_lookup_columns(df) -> tuple[str | None, str | None]:
     name_column = _internal_pick_column(columns, ["name", "简称", "名称", "证券简称"])
 
     if code_column is None or name_column is None:
-        object_columns = [col for col in columns if getattr(df[col], "dtype", None) == object]
+        object_columns = [
+            col for col in columns if is_string_dtype(getattr(df[col], "dtype", None))
+        ]
         if code_column is None and object_columns:
             code_column = object_columns[0]
         if name_column is None and len(object_columns) > 1:
@@ -292,10 +265,20 @@ def _internal_history_metrics(history_df):
         except Exception:
             pass
 
-    closes = frame[close_column].astype(float).tolist()
+    closes = []
+    valid_positions = []
+    for position, raw_value in enumerate(frame[close_column].tolist()):
+        try:
+            value = float(raw_value)
+        except (TypeError, ValueError):
+            continue
+        if math.isfinite(value):
+            closes.append(value)
+            valid_positions.append(position)
     if not closes:
-        return {"error": "empty close series"}
+        return {"error": "empty finite close series"}
 
+    frame = frame.iloc[valid_positions]
     latest_close = float(closes[-1])
     metrics: dict[str, float | str | int | None] = {
         "rows": len(closes),
@@ -308,7 +291,7 @@ def _internal_history_metrics(history_df):
         metrics["latest_trade_date"] = latest_trade_date
         try:
             parsed_trade_date = datetime.strptime(re.sub(r"[^0-9]", "", latest_trade_date)[:8], "%Y%m%d")
-            metrics["data_lag_days"] = (datetime.now() - parsed_trade_date).days
+            metrics["data_lag_days"] = (clock_now() - parsed_trade_date).days
             metrics["is_stale"] = metrics["data_lag_days"] > 7
         except Exception:
             metrics["data_lag_days"] = None
@@ -454,7 +437,9 @@ def _internal_resolve_a_stock_symbol(symbol_or_name: str) -> str | None:
             if resolved:
                 return resolved
 
-        contains_matches = lookup[series.str.contains(cleaned, case=False, na=False)]
+        contains_matches = lookup[
+            series.str.contains(cleaned, case=False, na=False, regex=False)
+        ]
         if not contains_matches.empty and code_column is not None:
             resolved = str(contains_matches.iloc[0][code_column]).strip()
             if resolved:
@@ -511,8 +496,14 @@ def stock_a_history(
 ) -> str:
     """获取A股历史行情数据。"""
 
-    start_value = _internal_normalize_date(start_date)
-    end_value = _internal_normalize_date(end_date)
+    try:
+        start_value = _internal_normalize_date(start_date)
+        end_value = _internal_normalize_date(end_date)
+    except ValueError as exc:
+        return json.dumps(
+            {"tool": "stock_a_history", "error": str(exc)},
+            ensure_ascii=False,
+        )
     resolved_symbol = _internal_resolve_a_stock_symbol(symbol)
     if not resolved_symbol:
         return json.dumps(
@@ -549,8 +540,8 @@ def stock_a_snapshot(symbol_or_name: str, history_days: int = 120, top_n: int = 
             ensure_ascii=False,
         )
 
-    end_date = datetime.now().strftime("%Y%m%d")
-    start_date = (datetime.now() - timedelta(days=max(1, int(history_days or 120)))).strftime("%Y%m%d")
+    end_date = clock_now().strftime("%Y%m%d")
+    start_date = (clock_now() - timedelta(days=max(1, int(history_days or 120)))).strftime("%Y%m%d")
 
     lookup_payload = None
     try:
@@ -641,8 +632,8 @@ def stock_a_hold_analysis(symbol_or_name: str, history_days: int = 90) -> str:
             ensure_ascii=False,
         )
 
-    end_date = datetime.now().strftime("%Y%m%d")
-    start_date = (datetime.now() - timedelta(days=max(1, int(history_days or 90)))).strftime("%Y%m%d")
+    end_date = clock_now().strftime("%Y%m%d")
+    start_date = (clock_now() - timedelta(days=max(1, int(history_days or 90)))).strftime("%Y%m%d")
 
     resolved_name = None
     try:
@@ -767,7 +758,7 @@ def _internal_resolved_symbol_payload(tool_name: str, symbol_or_name: str) -> tu
         return None, {
             "tool": tool_name,
             "error": f"unable to resolve stock symbol or name: {symbol_or_name}",
-            "fetch_time": datetime.now().isoformat(),
+            "fetch_time": clock_now().isoformat(),
         }
     return resolved_symbol, None
 
@@ -784,7 +775,7 @@ def _internal_json_payload(tool_name: str, symbol_or_name: str, fetch_fn, top_n:
             {
                 "input": symbol_or_name,
                 "resolved_symbol": resolved_symbol,
-                "fetch_time": datetime.now().isoformat(),
+                "fetch_time": clock_now().isoformat(),
                 "data_as_of": _internal_infer_payload_date(payload),
             }
         )
@@ -796,7 +787,7 @@ def _internal_json_payload(tool_name: str, symbol_or_name: str, fetch_fn, top_n:
                 "input": symbol_or_name,
                 "resolved_symbol": resolved_symbol,
                 "error": str(exc),
-                "fetch_time": datetime.now().isoformat(),
+                "fetch_time": clock_now().isoformat(),
             },
             ensure_ascii=False,
         )
@@ -900,12 +891,17 @@ def stock_a_lookup(keyword: str, top_n: int = 20) -> str:
             return lookup.head(max(1, min(int(top_n or 20), 50)))
 
         mask = lookup.astype(str).apply(
-            lambda row: row.str.contains(keyword_text, case=False, na=False).any(),
+            lambda row: row.str.contains(
+                keyword_text,
+                case=False,
+                na=False,
+                regex=False,
+            ).any(),
             axis=1,
         )
         filtered = lookup[mask]
         if getattr(filtered, "empty", True):
-            return lookup.head(max(1, min(int(top_n or 20), 50)))
+            return lookup.iloc[0:0]
         return filtered.head(max(1, min(int(top_n or 20), 50)))
 
     return _internal_safe_fetch(
@@ -937,7 +933,13 @@ def market_summary(exchange: str = "sse", date: str | None = None) -> str:
     if normalized in {"sse", "sh", "shanghai", "上交所", "沪市"}:
         return _internal_safe_fetch("market_summary_sse", ak.stock_sse_summary)
 
-    summary_date = _internal_normalize_date(date)
+    try:
+        summary_date = _internal_normalize_date(date)
+    except ValueError as exc:
+        return json.dumps(
+            {"tool": "market_summary_szse", "error": str(exc)},
+            ensure_ascii=False,
+        )
     return _internal_safe_fetch(
         "market_summary_szse",
         lambda: ak.stock_szse_summary(date=summary_date),
@@ -965,8 +967,14 @@ def index_history(
 ) -> str:
     """获取A股指数历史行情数据。"""
 
-    start_value = _internal_normalize_date(start_date)
-    end_value = _internal_normalize_date(end_date)
+    try:
+        start_value = _internal_normalize_date(start_date)
+        end_value = _internal_normalize_date(end_date)
+    except ValueError as exc:
+        return json.dumps(
+            {"tool": "index_history", "error": str(exc)},
+            ensure_ascii=False,
+        )
     return _internal_safe_fetch(
         "index_history",
         lambda: ak.index_zh_a_hist(

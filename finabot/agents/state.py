@@ -14,3 +14,10 @@ class AgentState(dict):
     fundamentals_report: str
     akshare_cache: dict[str, Any]
     debate_context: dict[str, Any]
+    # 评估/可追溯性字段（评估报告要求）：
+    as_of: str | None
+    # source_id -> {source, published_at, retrieved_at, url, priority, scope}
+    evidence_registry: dict[str, dict[str, Any]]
+    claims: list[dict[str, Any]]
+    risk_flags: list[str]
+    run_meta: dict[str, Any]

@@ -1,0 +1,43 @@
+{
+  "task_id": "t019",
+  "suite": "dev",
+  "as_of": "2026-05-29",
+  "question": "请分步骤展示对贵州茅台的多空辩论过程（新闻、看涨、看跌、综合）。",
+  "reference_claims": [
+    "按新闻→看涨→看跌→综合顺序呈现",
+    "保留双方论据"
+  ],
+  "reference_calculations": [],
+  "allowed_sources": [
+    "eastmoney",
+    "sse",
+    "cninfo"
+  ],
+  "forbidden_actions": [
+    "future_leak",
+    "fabricate"
+  ],
+  "output_schema": "analyst_report",
+  "acceptable_variants": [
+    "区间表述",
+    "四舍五入到两位小数"
+  ],
+  "hard_gates": [
+    "no_future_leak",
+    "no_fabrication",
+    "no_unsupported_advice"
+  ],
+  "graders": [
+    "schema",
+    "calc",
+    "citation",
+    "timing",
+    "compliance"
+  ],
+  "budget": {
+    "max_llm_calls": 6,
+    "max_tokens": 40000,
+    "max_cost_cny": 3.0,
+    "max_seconds": 240
+  }
+}

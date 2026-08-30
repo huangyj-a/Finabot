@@ -33,7 +33,7 @@ def _internal_build_market_prompt() -> ChatPromptTemplate:
 async def _internal_call_market_analyst(expression: str) -> str:
     prompt = _internal_build_market_prompt()
     messages = prompt.format_messages(messages=[HumanMessage(content=expression)])
-    response = await litellm_glm_call(messages=messages)
+    response = await litellm_glm_call(messages=messages, stream_label="market_analyst")
     return str(getattr(response, "content", "") or "")
 
 

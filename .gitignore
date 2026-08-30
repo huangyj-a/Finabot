@@ -19,4 +19,18 @@ venv/
 __pycache__/
 poetry.lock
 .pytest_cache/
-.test*
+.test_tmp/
+.workbuddy/
+
+# 运行时生成的数据（聊天记录 / 缓存 / 向量索引），勿提交
+memory/short_term/
+memory/working_memory/
+memory/runtime/
+memory/long_term.db
+memory/knowledge/chroma.sqlite3
+.finabot_context/
+outputs/
+
+# 评估脚本的 LLM 输出缓存（运行时产物，非源码）
+scripts/.eval_cache/
+scripts/.eval_cache_v2/

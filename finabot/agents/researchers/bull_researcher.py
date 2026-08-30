@@ -63,12 +63,5 @@ async def _internal_call_bull_researcher(expression: str, debate_context: dict |
     prompt = _internal_build_prompt()
     content = _internal_format_expression(expression, debate_context)
     messages = prompt.format_messages(messages=[HumanMessage(content=content)])
-    response = await litellm_glm_call(messages=messages)
+    response = await litellm_glm_call(messages=messages, stream_label="bull_researcher")
     return str(getattr(response, "content", "") or "")
-
-
-@tool
-async def bull_researcher(expression: str) -> str:
-    """看涨研究员，从多头视角论证股票投资机会并反驳看跌观点。"""
-
-    return await _internal_call_bull_researcher(expression)

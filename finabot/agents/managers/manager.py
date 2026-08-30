@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from typing import Any
 
 from langchain_core.messages import HumanMessage
@@ -44,6 +45,9 @@ _SUMMARY_MANAGER_PROMPT = """
 如果 `is_stale=true` 或 `data_lag_days>7`，必须降低结论置信度，并在风险段明确提示数据过时。
 如果新闻数据为“无法获取”或 `has_direct_news=false`，不得写“最新新闻显示”，只能写“暂无直接新闻数据”。
 估值、PE、PEG、机构评级、资金流、公告、研报等判断必须优先引用 AKShare 工具数据；如果对应工具没有返回数据，不得自行给出具体数值。
+基本面交叉验证：技术面定位（均线/区间）之外，必须纳入估值维度（TTM PE/PB 及历史分位，作为下方安全垫/支撑解释）与财务维度（盈利/毛利/营收增速），用 stock_a_valuation、stock_a_financial_indicators 的数据交叉验证；批价（如飞天批价）、渠道库存、提价/出厂价上调预期、业绩（如 Q3 报表）等若无直接工具数据，须列为关键定性观察点并标注“数据缺失/来源未知”。
+情景推演补全：乐观情景的触发条件须包含“提价/出厂价上调预期”；悲观情景的风险须包含“业绩不及预期（动销走弱、报表继续承压）”而不仅是大盘系统性回调。
+时间轴：以工具返回的 latest_trade_date / as_of 为“当前”，推算“未来两个月”≈其后约 60 个交易日（约 2 个月），区间与情景的时间标签须与数据日期一致，避免把未来两个月错标成具体月份（如把 8 月底起的未来两个月标成 11–12 月）。
 
 统一引用规范：
 - 行情 / 资金：引用东方财富、通达信或 Wind，必须标注日期。
@@ -91,6 +95,7 @@ def _internal_format_summary_input(expression: str, context: dict | None = None)
         context.get("akshare_cache"),
     )
     memories = context.get("memories") or []
+    confidence_report = context.get("confidence_report") or ""
 
     return f"""
 用户问题：{expression}
@@ -113,7 +118,7 @@ def _internal_format_summary_input(expression: str, context: dict | None = None)
 === 用户记忆 ===
 {memories}
 
-=== 回答格式 ===
+{confidence_report + chr(10) if confidence_report else ""}=== 回答格式 ===
 最终回答必须严格采用以下六段式结构，且每一段都要有真实数据支撑：
     - 结论前置：先给出未来一段时间的持有判断，再说明一句原因。
     - 核心判断：给出未来一段时间的区间预判、仓位建议和关键时间点。
@@ -129,14 +134,16 @@ def _internal_format_summary_input(expression: str, context: dict | None = None)
 
 async def _internal_call_summary_manager(expression: str, context: dict | None = None) -> str:
     prompt = _internal_build_prompt()
-    content = _internal_format_summary_input(expression, context)
+    effective_context = context or {}
+    if not effective_context.get("fundamentals_report"):
+        # AKShare 抓取是同步网络 IO，放到线程池执行，避免阻塞事件循环。
+        effective_context = dict(effective_context)
+        effective_context["fundamentals_report"] = await asyncio.to_thread(
+            _internal_collect_fundamental_context,
+            expression,
+            effective_context.get("akshare_cache"),
+        )
+    content = _internal_format_summary_input(expression, effective_context)
     messages = prompt.format_messages(messages=[HumanMessage(content=content)])
-    response = await litellm_glm_call(messages=messages, memories=(context or {}).get("memories"))
+    response = await litellm_glm_call(messages=messages, memories=effective_context.get("memories"), stream_label="summary_manager")
     return str(getattr(response, "content", "") or "")
-
-
-@tool
-async def summary_manager(expression: str) -> str:
-    """总结分析师，整合市场、新闻、多空研究和基本数据，输出标准金融分析。"""
-
-    return await _internal_call_summary_manager(expression)

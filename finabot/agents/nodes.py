@@ -1,11 +1,21 @@
+import asyncio
 import json
+import os
 import re
+from time import perf_counter
 
-from langchain_core.messages import AIMessage, ToolMessage
+from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, ToolMessage
 from langchain_core.messages.tool import tool_call
 
-from finabot.agents.llm import litellm_glm_call
+from finabot.agents.llm import litellm_glm_call, _debug_timing
 from finabot.agents.state import AgentState
+from finabot.agents.analysts.market_analyst import _internal_call_market_analyst
+from finabot.agents.analysts.news_analyst import _internal_call_news_analyst
+from finabot.agents.hold_pipeline import run_hold_analysis_pipeline
+from finabot.agents.researchers.researchers import _internal_call_researchers
+from finabot.agents.analysts.fundamental_analyst import _internal_call_fundamental_analyst
+from finabot.agents.evidence import register_subagent_evidence, register_tool_evidence
+from finabot.agents.refusal import classify_question
 from finabot.tools.base import get_tools
 
 
@@ -24,6 +34,131 @@ def _internal_normalize_tool_name(name) -> str:
     if name is None:
         return ""
     return str(name).strip()
+
+
+def _internal_latest_user_message(state: AgentState) -> str:
+    """与子代理节点路由保持一致：子代理消费最新人类消息，而非工具调用参数。"""
+    messages = state.get("messages", []) or []
+    for message in reversed(messages):
+        if isinstance(message, HumanMessage) or getattr(message, "type", None) == "human":
+            content = getattr(message, "content", "") or ""
+            if content:
+                return str(content)
+    if messages:
+        return str(getattr(messages[-1], "content", "") or "")
+    return ""
+
+
+_SUB_AGENT_NAMES = {
+    "fundamental_analyst",
+    "market_analyst",
+    "news_analyst",
+    "researchers",
+    "hold_analysis_pipeline",
+}
+
+
+async def _call_with_timeout(coro, name: str, timeout: float | None = None) -> str:
+    """Wrap a sub-agent call with a configurable timeout.
+
+    On timeout the function returns a structured placeholder so the
+    supervisor / summary manager can degrade confidence instead of
+    crashing the whole graph.
+    """
+    if timeout is None:
+        timeout = float(os.getenv("FINABOT_SUBAGENT_TIMEOUT_SECONDS", "60"))
+    try:
+        return await asyncio.wait_for(coro, timeout=timeout)
+    except asyncio.TimeoutError:
+        _debug_timing(f"subagent:timeout name={name} timeout={timeout}s")
+        return (
+            f"[subagent_timeout:{name}] 该子代理未能在 {timeout:.0f}s 内完成，"
+            f"结论置信度降级。"
+        )
+
+
+async def _internal_invoke_sub_agent(name: str, state: AgentState, call: dict | None = None) -> tuple[str, dict]:
+    """以与 graph 节点路由完全相同的上下文调用子代理。
+
+    子代理同时注册为节点和工具；无论 supervisor 的 tool_call 走专用节点
+    还是落入通用工具节点（多工具并发等场景），都必须共享 state 报告、
+    AKShare 缓存。返回 (结果文本, 需写回的 state 增量)。
+
+    每个子代理调用包超时保护（FINABOT_SUBAGENT_TIMEOUT_SECONDS，默认 60s），
+    超时返回结构化占位并降级置信度，避免单节点失败导致整轮崩溃。
+
+    多空辩论与总结已折叠进 hold_analysis_pipeline，不再作为独立的
+    supervisor 路由子代理，因此这里也不再单独处理 bull/bear/summary。
+    """
+    expression = _internal_latest_user_message(state)
+    args = (call or {}).get("args", {}) or {}
+
+    if name == "fundamental_analyst":
+        result = await _call_with_timeout(
+            _internal_call_fundamental_analyst(expression, state.setdefault("akshare_cache", {})),
+            name,
+        )
+        return str(result), {"fundamentals_report": str(result)}
+
+    if name == "market_analyst":
+        result = await _call_with_timeout(
+            _internal_call_market_analyst(expression),
+            name,
+        )
+        return str(result), {"market_report": str(result)}
+
+    if name == "news_analyst":
+        result = await _call_with_timeout(
+            _internal_call_news_analyst(expression, state.setdefault("akshare_cache", {})),
+            name,
+        )
+        return str(result), {"news_report": str(result)}
+
+    if name == "researchers":
+        result = await _call_with_timeout(
+            _internal_call_researchers(expression),
+            name,
+        )
+        return str(result), {}
+
+    if name == "hold_analysis_pipeline":
+        debate_mode = bool(args.get("debate_mode", False))
+        pipeline_result = await _call_with_timeout(
+            run_hold_analysis_pipeline(
+                expression,
+                {
+                    "market_report": state.get("market_report", ""),
+                    "memories": state.get("memories", []),
+                    "akshare_cache": state.setdefault("akshare_cache", {}),
+                },
+                debate_mode=debate_mode,
+            ),
+            name,
+        )
+        if isinstance(pipeline_result, str):
+            # 超时占位：退化为降级结果，避免下游对字符串调用 .get()
+            placeholder = pipeline_result
+            result = {
+                "fundamentals_report": placeholder,
+                "news_report": placeholder,
+                "bull_report": placeholder,
+                "bear_report": placeholder,
+                "summary_report": placeholder,
+            }
+        else:
+            result = pipeline_result
+        content = result.get("debate_report") if debate_mode else result["summary_report"]
+        return (
+            str(content),
+            {
+                "fundamentals_report": result["fundamentals_report"],
+                "news_report": result["news_report"],
+                "bull_report": result["bull_report"],
+                "bear_report": result["bear_report"],
+            },
+        )
+
+    raise ValueError(f"unknown sub-agent: {name}")
 
 
 def normalize_tool_call(call):
@@ -105,6 +240,17 @@ def extract_tool_calls_from_content(content: str):
     return [tool_call(name=tool_name, args=arguments, id=None)]
 
 
+def _strip_tool_call_markup(text: str) -> str:
+    """清掉正文中残留的 <tool_call> / <function> 工具调用标记（模型偶尔把工具调用当纯文本回显）。"""
+    if not text:
+        return ""
+    cleaned = re.sub(r"<tool_call>.*?</tool_call>", "", text, flags=re.DOTALL | re.IGNORECASE)
+    cleaned = re.sub(r"<function>.*?</function>", "", cleaned, flags=re.DOTALL | re.IGNORECASE)
+    # 去掉可能遗留的孤立 <arg_key>/<arg_value> 标记
+    cleaned = re.sub(r"</?arg_(?:key|value)>", "", cleaned, flags=re.IGNORECASE)
+    return cleaned.strip()
+
+
 def format_tools():
     formatted_tools = []
 
@@ -137,21 +283,88 @@ def format_tools():
     return formatted_tools
 
 
+def _internal_supervisor_rounds(state: AgentState) -> int:
+    """已发生的 supervisor 工具调用轮次（带 tool_calls 的 AIMessage 数量）。"""
+    return sum(
+        1
+        for message in state.get("messages", [])
+        if getattr(message, "type", None) == "ai" and getattr(message, "tool_calls", None)
+    )
+
+
+def _internal_refusal_note_for(state: AgentState) -> str:
+    """用户问题命中合规边界时返回合规说明，否则返回空字符串。"""
+    question = _internal_latest_user_message(state)
+    if not question:
+        return ""
+    decision = classify_question(question)
+    if decision.level == "safe":
+        return ""
+    return (
+        "【合规边界】用户请求命中「具体买卖/仓位/收益承诺」边界"
+        f"（判定：{decision.reason}）。你必须："
+        "1) 明确说明无法提供个性化买卖/仓位建议；"
+        "2) 转为一堂风险教育与研究方法课（如何看估值、如何计算收益率、如何理解风险）；"
+        "3) 不给出任何具体股票、具体价位、具体仓位比例或收益预期。"
+    )
+
+
 async def call_llm_node(state: AgentState):
+    # 轮次预算：第三方端点偏慢且模型可能反复派发子代理，若不限轮次会在
+    # FINABOT_RESPONSE_TIMEOUT_SECONDS 内跑不完。超预算后强制让 supervisor 直接
+    # 给出最终回答（去掉 tools 并丢弃残留工具调用），把总 LLM 调用数封顶。
+    max_rounds = max(1, int(os.getenv("FINABOT_MAX_LLM_ROUNDS", "6")))
+    rounds = _internal_supervisor_rounds(state)
+    force_final = rounds >= max_rounds
+    if force_final:
+        _debug_timing(f"llm:force_final rounds={rounds} max={max_rounds}")
+
+    messages = state["messages"]
+    # 合规拒绝路径：用户问题命中"具体买卖/仓位/收益承诺"边界时，
+    # 在消息序列最前面注入合规说明，让 supervisor 把回答转为一般教育。
+    refusal_note = _internal_refusal_note_for(state)
+    if refusal_note:
+        messages = [SystemMessage(content=refusal_note)] + list(messages)
+    if force_final:
+        # 轮次耗尽时追加强制合成指令，避免模型在巨大上下文中迷路吐出问候
+        messages = list(messages) + [
+            HumanMessage(content=(
+                "[系统强制指令] 工具调用轮次已达上限，你必须立刻综合前面已获取的全部数据，"
+                "直接给出最终分析回答。不要再发起任何工具调用。\n"
+                "请根据市场行情、估值（TTM PE/PB 及历史分位）、财务指标、新闻分析等已有信息，"
+                "按结论前置的专业格式给出完整回答。如果某类数据缺失，注明'数据缺失'即可。"
+            ))
+        ]
+
     msg = await litellm_glm_call(
-        messages=state["messages"],
-        tools=format_tools(),
-        memories=state.get("memories")
+        messages=messages,
+        tools=None if force_final else format_tools(),
+        memories=state.get("memories"),
+        stream_label="supervisor",
     )
 
     raw_tool_calls = getattr(msg, "tool_calls", None) or []
     tool_calls = [call for call in (normalize_tool_call(call) for call in raw_tool_calls) if call is not None]
     content = getattr(msg, "content", "") or ""
 
-    if not tool_calls:
+    if force_final:
+        # 预算耗尽：不再执行任何工具调用（含 GLM 以纯文本回退的 <tool_call> 标记），
+        # 直接综合已获取信息作答，避免无限循环导致响应超时。同时清掉正文中残留的
+        # 工具调用标记，避免把 <tool_call> 原样回显给用户。
+        tool_calls = []
+        content = _strip_tool_call_markup(content)
+        if not content.strip():
+            content = "（已达最大分析轮次，以下为基于已获取信息的综合判断）"
+    elif not tool_calls:
         tool_calls = extract_tool_calls_from_content(content)
         if tool_calls:
             content = ""
+
+    # 部分模型/兜底解析会产出缺 id 的 tool_call；补齐后 assistant.tool_calls
+    # 与后续 ToolMessage 才能稳定配对（OpenAI 兼容 API 要求两侧 id 一致）。
+    for position, call in enumerate(tool_calls):
+        if not call.get("id"):
+            tool_calls[position] = {**call, "id": f"finabot_call_{position}"}
 
     ai_msg = AIMessage(
         content=content,
@@ -162,28 +375,75 @@ async def call_llm_node(state: AgentState):
 
 async def call_tool_node(state: AgentState):
     last = state["messages"][-1]
-    tool_results = []
+    # 预置缓存，避免多个子代理在 gather 中并发 setdefault 时各自新建 dict 互相覆盖
+    state.setdefault("akshare_cache", {})
+    registry = state.setdefault("evidence_registry", {})
 
-    for call in last.tool_calls:
+    calls = list(enumerate(last.tool_calls))
+
+    async def _run_one(index, call):
         normalized_call = normalize_tool_call(call)
+        raw_id = call.get("id") if isinstance(call, dict) else getattr(call, "id", None)
+        call_id = raw_id or f"finabot_call_{index}"
+
+        # 每个 tool_call 必须有对应的 ToolMessage，否则下一条请求会因
+        # "assistant.tool_calls 缺少 tool 结果"被 OpenAI 兼容 API 拒绝。
         if normalized_call is None:
-            continue
+            return index, ToolMessage(content="工具调用格式无法解析。", tool_call_id=call_id), None
+
         tool_name = normalized_call["name"]
+
+        # 子代理双注册统一：即便与多个工具并发执行，也按节点路由相同的
+        # 上下文执行并写回报告/缓存增量（与节点路由行为一致）。
+        if tool_name in _SUB_AGENT_NAMES:
+            _debug_timing(f"tool:start sub_agent={tool_name}")
+            started = perf_counter()
+            try:
+                result_text, updates = await _internal_invoke_sub_agent(tool_name, state, normalized_call)
+            except Exception as exc:
+                _debug_timing(f"tool:error sub_agent={tool_name} after={round((perf_counter() - started) * 1000)}ms {type(exc).__name__}")
+                return (
+                    index,
+                    ToolMessage(content=f"子代理 {tool_name} 执行失败：{exc}", tool_call_id=call_id),
+                    None,
+                )
+            _debug_timing(f"tool:done sub_agent={tool_name} elapsed={round((perf_counter() - started) * 1000)}ms")
+            register_subagent_evidence(registry, tool_name, str(result_text), state.get("as_of"))
+            updates = dict(updates or {})
+            updates["evidence_registry"] = registry
+            return index, ToolMessage(content=str(result_text), tool_call_id=call_id), updates
+
         t = next((x for x in tools if x.name == tool_name), None)
         if t is None:
-            continue
-        res = await t.ainvoke(normalized_call["args"])
-        tool_results.append(
-            ToolMessage(
-                content=str(res),
-                tool_call_id=normalized_call["id"]
+            return index, ToolMessage(content=f"未知工具：{tool_name}。", tool_call_id=call_id), None
+        _debug_timing(f"tool:start {tool_name}")
+        started = perf_counter()
+        try:
+            res = await t.ainvoke(normalized_call["args"])
+        except Exception as exc:
+            # 单工具失败隔离：不再像串行版本那样让整轮崩溃
+            _debug_timing(f"tool:error {tool_name} after={round((perf_counter() - started) * 1000)}ms {type(exc).__name__}")
+            return (
+                index,
+                ToolMessage(content=f"工具 {tool_name} 执行失败：{exc}", tool_call_id=call_id),
+                None,
             )
+        _debug_timing(f"tool:done {tool_name} elapsed={round((perf_counter() - started) * 1000)}ms")
+        register_tool_evidence(registry, tool_name, str(res))
+        return (
+            index,
+            ToolMessage(content=str(res), tool_call_id=call_id),
+            {"evidence_registry": registry},
         )
-    return {"messages": tool_results}
 
+    # 并发执行所有 tool_call，把多工具批次的累计耗时压到单次最大值；
+    # 结果按原 call 顺序组装，保证确定性。state 增量按 key 合并（last-writer-wins）。
+    results = await asyncio.gather(*(_run_one(index, call) for index, call in calls))
+    ordered = sorted(results, key=lambda item: item[0])
+    tool_results = [message for _, message, _ in ordered]
+    state_updates: dict = {}
+    for _, _message, updates in ordered:
+        if updates:
+            state_updates.update(updates)
+    return {"messages": tool_results, **state_updates}
 
-def should_continue(state: AgentState):
-    last = state["messages"][-1]
-    if hasattr(last, "tool_calls") and last.tool_calls:
-        return "tool"
-    return "end"

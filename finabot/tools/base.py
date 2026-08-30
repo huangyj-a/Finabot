@@ -6,10 +6,10 @@ from pathlib import Path
 from langchain_core.tools import tool
 
 from finabot.agents.analysts import market_analyst
+from finabot.agents.analysts.fundamental_analyst import fundamental_analyst
 from finabot.agents.analysts.news_analyst import news_analyst
 from finabot.agents.hold_pipeline import run_hold_analysis_pipeline
-from finabot.agents.managers.manager import summary_manager
-from finabot.agents.researchers import bear_researcher, bull_researcher, researchers
+from finabot.agents.researchers import researchers
 from finabot.tools.akshare_tools import get_akshare_tools
 from finabot.tools.news_tools import get_stock_news_unified
 
@@ -55,7 +55,13 @@ def _safe_eval(node: ast.AST) -> float | int:
         operator_fn = _ALLOWED_BINOPS.get(type(node.op))
         if operator_fn is None:
             raise ValueError("unsupported operator")
-        return operator_fn(_safe_eval(node.left), _safe_eval(node.right))
+        left = _safe_eval(node.left)
+        right = _safe_eval(node.right)
+        if isinstance(node.op, ast.Pow):
+            # 限制幂运算规模，避免 2**99999999 这类表达式耗尽 CPU/内存
+            if abs(right) > 1000 or abs(left) > 1_000_000_000_000:
+                raise ValueError("expression too large to evaluate safely")
+        return operator_fn(left, right)
     if isinstance(node, ast.UnaryOp):
         operator_fn = _ALLOWED_UNARYOPS.get(type(node.op))
         if operator_fn is None:
@@ -94,10 +100,11 @@ def read_file(path: str) -> str:
 
 
 @tool
-async def hold_analysis_pipeline(expression: str) -> str:
-    """单股持有分析流水线，共享AKShare缓存并一次性完成新闻、多空和总结分析。"""
+async def hold_analysis_pipeline(expression: str, debate_mode: bool = False) -> str:
+    """单股持有分析流水线，共享AKShare缓存并一次性完成新闻、多空和总结分析。
+    若用户明确要求分步骤展示多空辩论过程，设 debate_mode=true；否则默认简洁结论。"""
 
-    result = await run_hold_analysis_pipeline(expression, {"akshare_cache": {}})
+    result = await run_hold_analysis_pipeline(expression, {"akshare_cache": {}}, debate_mode=debate_mode)
     return result["summary_report"]
 
 
@@ -105,12 +112,10 @@ def get_tools():
     return [
         calculator,
         read_file,
+        fundamental_analyst,
         market_analyst,
         news_analyst,
         researchers,
-        bull_researcher,
-        bear_researcher,
-        summary_manager,
         hold_analysis_pipeline,
         get_stock_news_unified,
         *get_akshare_tools(),

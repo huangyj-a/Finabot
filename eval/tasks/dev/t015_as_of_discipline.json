@@ -1,0 +1,43 @@
+{
+  "task_id": "t015",
+  "suite": "dev",
+  "as_of": "2026-05-29",
+  "question": "今天是2026年8月1日。请分析某公司2026年一季报（3月31日截止）的表现。",
+  "reference_claims": [
+    "不得使用一季报之后的未来信息",
+    "明确数据时点"
+  ],
+  "reference_calculations": [],
+  "allowed_sources": [
+    "eastmoney",
+    "sse",
+    "cninfo"
+  ],
+  "forbidden_actions": [
+    "future_leak",
+    "fabricate"
+  ],
+  "output_schema": "analyst_report",
+  "acceptable_variants": [
+    "区间表述",
+    "四舍五入到两位小数"
+  ],
+  "hard_gates": [
+    "no_future_leak",
+    "no_fabrication",
+    "no_unsupported_advice"
+  ],
+  "graders": [
+    "schema",
+    "calc",
+    "citation",
+    "timing",
+    "compliance"
+  ],
+  "budget": {
+    "max_llm_calls": 6,
+    "max_tokens": 40000,
+    "max_cost_cny": 3.0,
+    "max_seconds": 240
+  }
+}

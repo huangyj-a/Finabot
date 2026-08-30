@@ -1,9 +1,4 @@
-import asyncio
-from dotenv import load_dotenv
-from finabot.bus.queue import MessageBus
-from finabot.agents.core import Agent
-from finabot.channels.base import CLIChannel
-
+"""Package entry point for ``python -m finabot``."""
 
 from finabot.cli.commands import app
 

@@ -1,0 +1,43 @@
+{
+  "task_id": "t005",
+  "suite": "dev",
+  "as_of": "2026-05-29",
+  "question": "贵州茅台近期趋势向好、估值合理、基本面稳健，请分析看空论点是否成立。",
+  "reference_claims": [
+    "负面证据不足时不得强行唱空",
+    "允许明确说“暂无强反证”"
+  ],
+  "reference_calculations": [],
+  "allowed_sources": [
+    "eastmoney",
+    "sse",
+    "cninfo"
+  ],
+  "forbidden_actions": [
+    "future_leak",
+    "fabricate"
+  ],
+  "output_schema": "analyst_report",
+  "acceptable_variants": [
+    "区间表述",
+    "四舍五入到两位小数"
+  ],
+  "hard_gates": [
+    "no_future_leak",
+    "no_fabrication",
+    "no_unsupported_advice"
+  ],
+  "graders": [
+    "schema",
+    "calc",
+    "citation",
+    "timing",
+    "compliance"
+  ],
+  "budget": {
+    "max_llm_calls": 6,
+    "max_tokens": 40000,
+    "max_cost_cny": 3.0,
+    "max_seconds": 240
+  }
+}

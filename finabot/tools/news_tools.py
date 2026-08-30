@@ -4,9 +4,10 @@ from __future__ import annotations
 
 import json
 import re
-from datetime import datetime
 
 from langchain_core.tools import tool
+
+from finabot.utils.clock import now as clock_now
 
 
 def _identify_stock_type(stock_code: str) -> str:
@@ -30,7 +31,7 @@ def _format_dataframe_news(df, source: str, max_news: int) -> str:
     rows = df.head(max(1, int(max_news or 10))).to_dict(orient="records")
     lines = [
         f"=== 📰 新闻数据来源: {source} ===",
-        f"获取时间: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}",
+        f"获取时间: {clock_now().strftime('%Y-%m-%d %H:%M:%S')}",
         f"新闻数量: {len(rows)} 条",
         "",
     ]
@@ -49,7 +50,7 @@ def _format_dataframe_news(df, source: str, max_news: int) -> str:
     return "\n".join(lines).strip()
 
 
-def _get_a_share_news(stock_code: str, max_news: int) -> str:
+def _get_a_share_news(stock_code: str, max_news: int) -> tuple[str, str]:
     try:
         import akshare as ak
 
@@ -57,27 +58,27 @@ def _get_a_share_news(stock_code: str, max_news: int) -> str:
         if hasattr(ak, "stock_news_em"):
             result = _format_dataframe_news(ak.stock_news_em(symbol=clean_code), "东方财富个股新闻", max_news)
             if result:
-                return result
+                return result, "stock_direct"
         if hasattr(ak, "stock_info_global_cls"):
             result = _format_dataframe_news(ak.stock_info_global_cls(symbol="全部"), "财联社电报", max_news)
             if result:
-                return result
+                return result, "market_general"
     except Exception as exc:
-        return f"❌ A股新闻获取失败: {exc}"
-    return "❌ 无法获取A股新闻数据，所有新闻源均不可用"
+        return f"❌ A股新闻获取失败: {exc}", "unavailable"
+    return "❌ 无法获取A股新闻数据，所有新闻源均不可用", "unavailable"
 
 
-def _get_hk_or_us_news(stock_code: str, max_news: int, market: str) -> str:
+def _get_hk_or_us_news(stock_code: str, max_news: int, market: str) -> tuple[str, str]:
     try:
         import akshare as ak
 
         if hasattr(ak, "stock_info_global_cls"):
             result = _format_dataframe_news(ak.stock_info_global_cls(symbol="全部"), f"{market}通用财经新闻", max_news)
             if result:
-                return result
+                return result, "market_general"
     except Exception as exc:
-        return f"❌ {market}新闻获取失败: {exc}"
-    return f"❌ 无法获取{market}新闻数据，所有新闻源均不可用"
+        return f"❌ {market}新闻获取失败: {exc}", "unavailable"
+    return f"❌ 无法获取{market}新闻数据，所有新闻源均不可用", "unavailable"
 
 
 @tool
@@ -88,20 +89,21 @@ def get_stock_news_unified(stock_code: str, max_news: int = 10, model_info: str 
         return "❌ 错误: 未提供股票代码"
     stock_type = _identify_stock_type(stock_code)
     if stock_type == "A股":
-        news = _get_a_share_news(stock_code, max_news)
+        news, news_scope = _get_a_share_news(stock_code, max_news)
     elif stock_type == "港股":
-        news = _get_hk_or_us_news(stock_code, max_news, "港股")
+        news, news_scope = _get_hk_or_us_news(stock_code, max_news, "港股")
     else:
-        news = _get_hk_or_us_news(stock_code, max_news, "美股")
+        news, news_scope = _get_hk_or_us_news(stock_code, max_news, "美股")
     return json.dumps(
         {
             "tool": "get_stock_news_unified",
             "stock_code": stock_code,
             "stock_type": stock_type,
-            "fetch_time": datetime.now().isoformat(),
+            "fetch_time": clock_now().isoformat(),
             "model_info": model_info,
             "news": news,
-            "has_direct_news": not news.startswith("❌"),
+            "news_scope": news_scope,
+            "has_direct_news": news_scope == "stock_direct",
         },
         ensure_ascii=False,
     )

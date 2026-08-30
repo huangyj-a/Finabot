@@ -1,50 +1,6 @@
 import json
-import sys
-from pathlib import Path
-import types
 
 import pandas as pd
-
-sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-
-
-def _internal_empty_frame():
-    return pd.DataFrame([])
-
-fake_litellm = types.ModuleType("litellm")
-
-
-async def _internal_fake_acompletion(*args, **kwargs):
-    raise RuntimeError("litellm should not be called in these unit tests")
-
-
-fake_litellm.acompletion = _internal_fake_acompletion
-sys.modules.setdefault("litellm", fake_litellm)
-
-fake_akshare = types.ModuleType("akshare")
-fake_akshare.stock_zh_a_hist = lambda **kwargs: _internal_empty_frame()
-fake_akshare.stock_info_a_code_name = lambda: pd.DataFrame(
-    [
-        {"证券代码": "600519", "证券简称": "贵州茅台"},
-        {"证券代码": "000001", "证券简称": "平安银行"},
-    ]
-)
-fake_akshare.stock_zh_a_spot_em = lambda: _internal_empty_frame()
-fake_akshare.stock_individual_info_em = lambda symbol=None, timeout=None: _internal_empty_frame()
-fake_akshare.stock_sse_summary = lambda: _internal_empty_frame()
-fake_akshare.stock_szse_summary = lambda date=None: _internal_empty_frame()
-fake_akshare.stock_zh_index_spot_em = lambda: _internal_empty_frame()
-fake_akshare.stock_zh_index_daily_em = lambda **kwargs: _internal_empty_frame()
-fake_akshare.stock_zh_index_spot_sina = lambda: _internal_empty_frame()
-fake_akshare.index_zh_a_hist = lambda **kwargs: _internal_empty_frame()
-fake_akshare.index_zh_a_hist_min_em = lambda **kwargs: _internal_empty_frame()
-fake_akshare.stock_hk_index_spot_em = lambda: _internal_empty_frame()
-fake_akshare.stock_hk_index_daily_em = lambda **kwargs: _internal_empty_frame()
-fake_akshare.fund_etf_spot_em = lambda: _internal_empty_frame()
-fake_akshare.fund_open_fund_daily_em = lambda: _internal_empty_frame()
-fake_akshare.fund_etf_fund_daily_em = lambda: _internal_empty_frame()
-fake_akshare.fund_money_fund_daily_em = lambda: _internal_empty_frame()
-sys.modules.setdefault("akshare", fake_akshare)
 
 from finabot.agents.nodes import format_tools
 from finabot.tools.base import get_tools
@@ -302,6 +258,25 @@ def test_stock_a_lookup_returns_matches(monkeypatch):
 
     assert payload["tool"] == "stock_a_lookup"
     assert any(row["证券简称"] == "贵州茅台" for row in payload["sample"])
+
+
+def test_stock_a_lookup_returns_empty_sample_when_keyword_does_not_match(monkeypatch):
+    monkeypatch.setattr(
+        aktools.ak,
+        "stock_info_a_code_name",
+        lambda: pd.DataFrame(
+            [
+                {"证券代码": "600519", "证券简称": "贵州茅台"},
+                {"证券代码": "000858", "证券简称": "五粮液"},
+            ]
+        ),
+    )
+
+    payload = json.loads(aktools.stock_a_lookup.invoke({"keyword": "完全不存在的股票"}))
+
+    assert payload["tool"] == "stock_a_lookup"
+    assert payload["rows"] == 0
+    assert payload["sample"] == []
 
 
 def test_market_summary_routes_to_selected_exchange(monkeypatch):

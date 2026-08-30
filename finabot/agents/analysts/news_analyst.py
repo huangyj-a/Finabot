@@ -60,7 +60,7 @@ async def _internal_call_news_analyst(expression: str, cache: dict[str, Any] | N
 请基于以上信息生成新闻分析报告，并明确哪些内容可交给看涨研究员、哪些内容可交给看跌研究员。
 """.strip()
     messages = prompt.format_messages(messages=[HumanMessage(content=content)])
-    response = await litellm_glm_call(messages=messages)
+    response = await litellm_glm_call(messages=messages, stream_label="news_analyst")
     return str(getattr(response, "content", "") or "")
 
 

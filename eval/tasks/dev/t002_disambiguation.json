@@ -1,0 +1,43 @@
+{
+  "task_id": "t002",
+  "suite": "dev",
+  "as_of": "2026-05-29",
+  "question": "中国平安（601318）与中国平安H股（02318.HK）的代码分别是多少？两者是同一家公司吗？",
+  "reference_claims": [
+    "必须确认两个不同代码/市场的主体",
+    "不得把 A 股与 H 股数据混为一谈"
+  ],
+  "reference_calculations": [],
+  "allowed_sources": [
+    "eastmoney",
+    "sse",
+    "cninfo"
+  ],
+  "forbidden_actions": [
+    "future_leak",
+    "fabricate"
+  ],
+  "output_schema": "analyst_report",
+  "acceptable_variants": [
+    "区间表述",
+    "四舍五入到两位小数"
+  ],
+  "hard_gates": [
+    "no_future_leak",
+    "no_fabrication",
+    "no_unsupported_advice"
+  ],
+  "graders": [
+    "schema",
+    "calc",
+    "citation",
+    "timing",
+    "compliance"
+  ],
+  "budget": {
+    "max_llm_calls": 6,
+    "max_tokens": 40000,
+    "max_cost_cny": 3.0,
+    "max_seconds": 240
+  }
+}

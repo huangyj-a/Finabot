@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 
+import concurrent.futures
 import json
 import re
-from datetime import datetime
 from typing import Any
+
+from finabot.utils.clock import now as clock_now
 
 
 def _internal_extract_stock_query(expression: str) -> str:
@@ -45,21 +47,36 @@ def get_cached_akshare_data(cache: dict[str, Any] | None, expression: str) -> di
     )
     from finabot.tools.news_tools import get_stock_news_unified
 
-    payload: dict[str, str] = {"query": expression, "extracted_query": query, "fetch_time": datetime.now().isoformat()}
+    payload: dict[str, str] = {"query": expression, "extracted_query": query, "fetch_time": clock_now().isoformat()}
     target = query
     try:
         lookup = stock_a_lookup.invoke({"keyword": query, "top_n": 5})
         payload["stock_lookup"] = str(lookup)
         lookup_payload = json.loads(str(lookup))
-        candidates = lookup_payload.get("candidates") or []
-        if candidates and isinstance(candidates[0], dict) and candidates[0].get("代码"):
-            target = str(candidates[0]["代码"])
-            payload["resolved_symbol"] = target
-            payload["resolved_name"] = str(candidates[0].get("名称") or candidates[0].get("name") or "")
+        candidates = lookup_payload.get("sample") or []
+        if candidates and isinstance(candidates[0], dict):
+            first_candidate = candidates[0]
+            code = (
+                first_candidate.get("代码")
+                or first_candidate.get("证券代码")
+                or first_candidate.get("code")
+            )
+            if code:
+                target = str(code).strip()
+                payload["resolved_symbol"] = target
+                payload["resolved_name"] = str(
+                    first_candidate.get("名称")
+                    or first_candidate.get("证券简称")
+                    or first_candidate.get("name")
+                    or ""
+                )
     except Exception as exc:
         payload["stock_lookup_error"] = str(exc)
 
-    for field, func, kwargs in [
+    # 10 个行情字段之间互不依赖，并行拉取以缩短整体耗时
+    # （线程池而非 asyncio.gather：akshare 的同步 HTTP 调用在并发会话下本就安全，
+    #  见 _internal_without_proxy_env 的历史说明）。
+    field_specs = [
         ("stock_spot", stock_a_spot, {"keyword": target, "top_n": 5}),
         ("stock_info", stock_a_individual_info, {"symbol_or_name": target}),
         ("stock_snapshot", stock_a_snapshot, {"symbol_or_name": target, "history_days": 90, "top_n": 8}),
@@ -70,11 +87,26 @@ def get_cached_akshare_data(cache: dict[str, Any] | None, expression: str) -> di
         ("stock_research_report", stock_a_research_report, {"symbol_or_name": target, "top_n": 10}),
         ("stock_notice", stock_a_notice, {"symbol_or_name": target, "top_n": 10}),
         ("stock_news", get_stock_news_unified, {"stock_code": target, "max_news": 10}),
-    ]:
-        try:
-            payload[field] = str(func.invoke(kwargs))
-        except Exception as exc:
-            payload[f"{field}_error"] = str(exc)
+    ]
+    fetched: dict[str, Any] = {}
+    with concurrent.futures.ThreadPoolExecutor(max_workers=min(len(field_specs), 8)) as executor:
+        futures = {
+            executor.submit(func.invoke, kwargs): field
+            for field, func, kwargs in field_specs
+        }
+        for future in concurrent.futures.as_completed(futures):
+            field = futures[future]
+            try:
+                fetched[field] = future.result()
+            except Exception as exc:
+                fetched[field] = exc
+
+    for field, _func, _kwargs in field_specs:
+        outcome = fetched.get(field)
+        if isinstance(outcome, Exception):
+            payload[f"{field}_error"] = str(outcome)
+        else:
+            payload[field] = str(outcome)
 
     cache[query] = payload
     if target != query:

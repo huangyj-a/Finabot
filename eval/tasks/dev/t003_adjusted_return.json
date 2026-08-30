@@ -1,0 +1,43 @@
+{
+  "task_id": "t003",
+  "suite": "dev",
+  "as_of": "2026-05-29",
+  "question": "贵州茅台2026年5月的总回报率与价格收益率有什么区别？请用公式说明并给出示例计算。",
+  "reference_claims": [
+    "必须区分价格收益与总回报（含分红再投资）",
+    "给出公式与数字区间"
+  ],
+  "reference_calculations": [],
+  "allowed_sources": [
+    "eastmoney",
+    "sse",
+    "cninfo"
+  ],
+  "forbidden_actions": [
+    "future_leak",
+    "fabricate"
+  ],
+  "output_schema": "analyst_report",
+  "acceptable_variants": [
+    "区间表述",
+    "四舍五入到两位小数"
+  ],
+  "hard_gates": [
+    "no_future_leak",
+    "no_fabrication",
+    "no_unsupported_advice"
+  ],
+  "graders": [
+    "schema",
+    "calc",
+    "citation",
+    "timing",
+    "compliance"
+  ],
+  "budget": {
+    "max_llm_calls": 6,
+    "max_tokens": 40000,
+    "max_cost_cny": 3.0,
+    "max_seconds": 240
+  }
+}

@@ -4,11 +4,15 @@ from __future__ import annotations
 
 import hashlib
 import os
+import re
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Iterable, Literal, Sequence
 
 from langchain_core.messages import BaseMessage
+
+# CJK 字符（含扩展区）按每字约 1 token 估算；ASCII 仍按 chars_per_token 折算
+_CJK_RE = re.compile(r"[\u4e00-\u9fff\u3400-\u4dbf\uf900-\ufaff]")
 
 
 CompressionMode = Literal["auto", "reactive", "off"]
@@ -53,29 +57,130 @@ class ContextCompressor:
         compressed = self._micro_compact(compressed)
 
         if mode == "reactive":
-            return self._reactive_compact(compressed)
-        if self._estimated_tokens(compressed) > self._auto_compact_threshold():
+            compressed = self._reactive_compact(compressed)
+        elif self._estimated_tokens(compressed) > self._auto_compact_threshold():
             compressed = self._session_memory_compact(compressed)
-        return compressed
+        return self._repair_tool_pairing(compressed)
+
+    @staticmethod
+    def _tool_call_identifier(call: Any) -> Any:
+        if isinstance(call, dict):
+            return call.get("id")
+        return getattr(call, "id", None)
+
+    def _repair_tool_pairing(self, messages: list[dict]) -> list[dict]:
+        """裁剪/压缩后修复 assistant(tool_calls) 与 tool 结果的配对。
+
+        OpenAI 兼容 API 要求：tool 消息必须紧跟其所属的 assistant 消息，
+        且 assistant.tool_calls 的每个 id 都要有对应 tool 结果。裁剪可能
+        把配对从中间切断，这里丢弃孤儿工具结果、摘除悬挂的 tool_calls。
+        """
+        repaired: list[dict] = []
+        pending_ids: set[Any] = set()
+        for message in messages:
+            role = message.get("role")
+            if role == "tool":
+                tool_call_id = message.get("tool_call_id")
+                is_attached = (
+                    bool(pending_ids)
+                    and tool_call_id in pending_ids
+                    and bool(repaired)
+                    and repaired[-1].get("role") in {"assistant", "tool"}
+                )
+                if is_attached:
+                    repaired.append(message)
+                    pending_ids.discard(tool_call_id)
+                # 否则视为孤儿工具结果，直接丢弃
+                continue
+
+            if pending_ids:
+                self._strip_dangling_tool_calls(repaired)
+                pending_ids = set()
+
+            if role == "assistant":
+                calls = message.get("tool_calls") or []
+                pending_ids = {
+                    identifier
+                    for identifier in (
+                        self._tool_call_identifier(call) for call in calls
+                    )
+                    if identifier is not None
+                }
+            repaired.append(message)
+
+        if pending_ids:
+            self._strip_dangling_tool_calls(repaired)
+        return repaired
+
+    def _strip_dangling_tool_calls(self, repaired: list[dict]) -> None:
+        """移除尾部 assistant 消息上未被 tool 结果覆盖的 tool_calls。"""
+        for index in range(len(repaired) - 1, -1, -1):
+            message = repaired[index]
+            if message.get("role") != "assistant":
+                continue
+            calls = message.get("tool_calls") or []
+            if not calls:
+                return
+            expected = {
+                identifier
+                for identifier in (
+                    self._tool_call_identifier(call) for call in calls
+                )
+                if identifier is not None
+            }
+            covered = {
+                repaired[later].get("tool_call_id")
+                for later in range(index + 1, len(repaired))
+                if repaired[later].get("role") == "tool"
+            }
+            if expected <= covered:
+                return
+            cleaned = {key: value for key, value in message.items() if key != "tool_calls"}
+            if str(cleaned.get("content") or "").strip():
+                repaired[index] = cleaned
+            else:
+                del repaired[index]
+            return
 
     def _tool_result_budget(self, messages: list[dict]) -> list[dict]:
-        tool_indices = [index for index, message in enumerate(messages) if message.get("role") == "tool"]
-        total_bytes = sum(self._content_bytes(messages[index]) for index in tool_indices)
-        if total_bytes <= self.config.tool_result_budget_bytes:
-            return messages
+        """超大工具结果循环落盘，直到没有"单个就超预算"的巨型结果。
 
-        largest_index = max(tool_indices, key=lambda index: self._content_bytes(messages[index]))
-        content = str(messages[largest_index].get("content", ""))
-        if not content or content.startswith("[toolResultBudget]"):
-            return messages
-        path = self._spill_content(content)
-        display_path = self._display_path(path)
-        original_bytes = len(content.encode("utf-8"))
-        messages[largest_index]["content"] = (
-            f"[toolResultBudget] 工具结果已落盘保留完整内容；"
-            f"原始大小 {original_bytes} bytes；如需完整内容，调用 read_file 读取 `{display_path}`。"
-        )
-        return messages
+        只落盘单个大小超过预算的巨型结果（循环处理多个巨型结果）；小结果
+        保持全文，避免落盘标记自身的 UTF-8 字节数撑爆小预算导致误伤。
+        """
+        while True:
+            tool_indices = [index for index, message in enumerate(messages) if message.get("role") == "tool"]
+            if not tool_indices:
+                return messages
+            total_bytes = sum(self._content_bytes(messages[index]) for index in tool_indices)
+            if total_bytes <= self.config.tool_result_budget_bytes:
+                return messages
+
+            candidates = [
+                index
+                for index in tool_indices
+                if not str(messages[index].get("content", "")).startswith("[toolResultBudget]")
+            ]
+            big = [
+                index
+                for index in candidates
+                if self._content_bytes(messages[index]) > self.config.tool_result_budget_bytes
+            ]
+            if not big:
+                # 剩余结果都不大，说明超预算主要来自落盘标记文本，停止继续落盘
+                return messages
+
+            largest_index = max(big, key=lambda index: self._content_bytes(messages[index]))
+            content = str(messages[largest_index].get("content", ""))
+            if not content:
+                return messages
+            path = self._spill_content(content)
+            display_path = self._display_path(path)
+            original_bytes = len(content.encode("utf-8"))
+            messages[largest_index]["content"] = (
+                f"[toolResultBudget] 工具结果已落盘保留完整内容；"
+                f"原始大小 {original_bytes} bytes；如需完整内容，调用 read_file 读取 `{display_path}`。"
+            )
 
     def _snip_compact(self, messages: list[dict]) -> list[dict]:
         if len(messages) <= self.config.max_messages:
@@ -99,9 +204,13 @@ class ContextCompressor:
             content = str(messages[index].get("content", ""))
             if content.startswith("[toolResultBudget]"):
                 continue
+            # 旧工具结果不再直接丢弃：落盘保留完整内容，提示词里留 read_file 指针，
+            # 后续如需取回旧数据可恢复，与 toolResultBudget 的落盘策略一致。
+            path = self._spill_content(content)
+            display_path = self._display_path(path)
             messages[index]["content"] = (
-                f"[microCompact] 旧工具结果已压缩，占位保留。"
-                f"原始字符数 {len(content)}；最近 {self.config.keep_recent_tool_results} 条工具结果保留全文。"
+                f"[microCompact] 旧工具结果已压缩并落盘保留完整内容；"
+                f"原始字符数 {len(content)}；如需完整内容，调用 read_file 读取 `{display_path}`。"
             )
         return messages
 
@@ -145,9 +254,20 @@ class ContextCompressor:
     def _content_bytes(self, message: dict) -> int:
         return len(str(message.get("content", "")).encode("utf-8"))
 
+    def _chars_to_tokens(self, text: str) -> int:
+        """粗略估算文本 token 数：CJK 每字约 1 token，ASCII 按 chars_per_token 折算。
+
+        旧实现统一用 chars // 4，中文（每字≈1 token）被低估约 4 倍，
+        导致 auto 压缩几乎不触发、长中文对话只能走更激进的 reactive 应急路径。
+        """
+        if not text:
+            return 0
+        cjk = len(_CJK_RE.findall(text))
+        other = len(text) - cjk
+        return max(cjk + other // max(self.config.chars_per_token, 1), 1)
+
     def _estimated_tokens(self, messages: list[dict]) -> int:
-        chars = sum(len(str(message.get("content", ""))) for message in messages)
-        return max(chars // max(self.config.chars_per_token, 1), 1)
+        return sum(self._chars_to_tokens(str(message.get("content", ""))) for message in messages)
 
     def _auto_compact_threshold(self) -> int:
         return max(
@@ -200,6 +320,12 @@ def _internal_summary_from_body(body: str, max_chars: int = 240) -> str:
     return summary if len(summary) <= max_chars else f"{summary[:max_chars].rstrip()}..."
 
 
+# 技能发现缓存：按 (路径, mtime_ns, size) 指纹缓存，避免每次构建提示都重读磁盘。
+# ContextBuilder 每次 convert_messages 都会新建，实例缓存无效，故用模块级缓存。
+_SKILL_CACHE: dict[tuple[tuple[str, int, int], ...], list[SkillDescriptor]] = {}
+_SKILL_CACHE_MAX_ENTRIES = 16
+
+
 class ContextBuilder:
     """Assemble system prompt, memories, skills, and conversation history."""
 
@@ -214,9 +340,27 @@ class ContextBuilder:
         self.skills_root = Path(root)
         self.compressor = ContextCompressor(compression_config)
 
+    @staticmethod
+    def _skills_fingerprint(skills_root: Path) -> tuple[tuple[str, int, int], ...]:
+        entries = []
+        for path in sorted(skills_root.rglob("*.md")):
+            if not path.is_file():
+                continue
+            try:
+                stat = path.stat()
+                entries.append((path.as_posix(), stat.st_mtime_ns, stat.st_size))
+            except OSError:
+                continue
+        return tuple(entries)
+
     def discover_skills(self) -> list[SkillDescriptor]:
         if not self.skills_root.exists():
             return []
+
+        fingerprint = self._skills_fingerprint(self.skills_root)
+        cached = _SKILL_CACHE.get(fingerprint)
+        if cached is not None:
+            return list(cached)
 
         skills: list[SkillDescriptor] = []
         for path in sorted(self.skills_root.rglob("*.md")):
@@ -236,6 +380,10 @@ class ContextBuilder:
                     content=body,
                 )
             )
+
+        if len(_SKILL_CACHE) >= _SKILL_CACHE_MAX_ENTRIES:
+            _SKILL_CACHE.clear()
+        _SKILL_CACHE[fingerprint] = list(skills)
         return skills
 
     def build_system_prompt(

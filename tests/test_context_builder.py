@@ -2,7 +2,7 @@ import shutil
 from pathlib import Path
 from uuid import uuid4
 
-from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
+from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, ToolMessage
 
 from finabot.agents.context import ContextBuilder
 
@@ -65,6 +65,7 @@ def test_context_builder_preserves_system_messages_and_tool_calls():
             content="",
             tool_calls=[{"name": "read_file", "args": {"path": "skills/demo.md"}, "id": "call-1"}],
         ),
+        ToolMessage(content="demo 内容", tool_call_id="call-1"),
     ]
 
     converted = builder.build_messages(messages)
@@ -74,4 +75,5 @@ def test_context_builder_preserves_system_messages_and_tool_calls():
     assert "子代理系统提示" in converted[0]["content"]
     assert converted[1] == {"role": "user", "content": "用户问题"}
     assert converted[2]["tool_calls"][0]["function"]["name"] == "read_file"
+    assert converted[3]["tool_call_id"] == "call-1"
     shutil.rmtree(temp_dir, ignore_errors=True)

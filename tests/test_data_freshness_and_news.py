@@ -37,8 +37,28 @@ def test_unified_news_tool_formats_direct_news(monkeypatch):
 
     assert payload["stock_type"] == "A股"
     assert payload["has_direct_news"] is True
+    assert payload["news_scope"] == "stock_direct"
     assert "新易盛订单增长" in payload["news"]
     assert "fetch_time" in payload
+
+
+def test_unified_news_marks_market_fallback_as_non_direct(monkeypatch):
+    from finabot.tools.news_tools import get_stock_news_unified
+
+    fake_akshare = types.ModuleType("akshare")
+    fake_akshare.stock_news_em = lambda symbol: pd.DataFrame([])
+    fake_akshare.stock_info_global_cls = lambda symbol: pd.DataFrame(
+        [{"标题": "市场整体风险偏好回升", "时间": "2026-05-30"}]
+    )
+    monkeypatch.setitem(sys.modules, "akshare", fake_akshare)
+
+    payload = json.loads(
+        get_stock_news_unified.invoke({"stock_code": "300502", "max_news": 3})
+    )
+
+    assert payload["news_scope"] == "market_general"
+    assert payload["has_direct_news"] is False
+    assert "市场整体风险偏好回升" in payload["news"]
 
 
 def test_akshare_cache_uses_extracted_stock_query(monkeypatch):
@@ -51,7 +71,7 @@ def test_akshare_cache_uses_extracted_stock_query(monkeypatch):
         def invoke(self, kwargs):
             calls["lookup"] += 1
             assert kwargs["keyword"] == "新易盛"
-            return json.dumps({"candidates": [{"代码": "300502", "名称": "新易盛"}]}, ensure_ascii=False)
+            return json.dumps({"sample": [{"代码": "300502", "名称": "新易盛"}]}, ensure_ascii=False)
 
     class StaticTool:
         def invoke(self, kwargs):

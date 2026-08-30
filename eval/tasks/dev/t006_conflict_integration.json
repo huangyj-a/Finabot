@@ -1,0 +1,43 @@
+{
+  "task_id": "t006",
+  "suite": "dev",
+  "as_of": "2026-05-29",
+  "question": "某公司营收高增长但现金流质量偏弱，请综合评估其投资价值，保留冲突。",
+  "reference_claims": [
+    "必须同时保留支持与反对证据",
+    "给出触发条件而非单点预测"
+  ],
+  "reference_calculations": [],
+  "allowed_sources": [
+    "eastmoney",
+    "sse",
+    "cninfo"
+  ],
+  "forbidden_actions": [
+    "future_leak",
+    "fabricate"
+  ],
+  "output_schema": "analyst_report",
+  "acceptable_variants": [
+    "区间表述",
+    "四舍五入到两位小数"
+  ],
+  "hard_gates": [
+    "no_future_leak",
+    "no_fabrication",
+    "no_unsupported_advice"
+  ],
+  "graders": [
+    "schema",
+    "calc",
+    "citation",
+    "timing",
+    "compliance"
+  ],
+  "budget": {
+    "max_llm_calls": 6,
+    "max_tokens": 40000,
+    "max_cost_cny": 3.0,
+    "max_seconds": 240
+  }
+}
