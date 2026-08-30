@@ -335,7 +335,7 @@ run_meta: dict                      # llm_calls, cost, started_at, recursion_use
 
 ### P1（W2–W3）
 
-11. ⏳ 冻结数据 fixture 工厂扩至全部任务（当前仅 t001 有示例快照；正式基线需真实接口采样）
+11. ✅ 冻结数据 fixture 工厂 + 生成器：`finabot/eval/fixture_builder.py`（`records_from_frame`/`assemble_snapshot`/`write_snapshot`，NaN→null JSON 安全）+ `scripts/gen_fixtures.py`（采样真实 AKShare 数据写 snapshot.json）。**全部 20 题的快照仍需用生成器逐题采样**
 12. ✅ 注入防护（`context.py`：记忆区块 + `mark_untrusted()` 通用包裹；新闻/网页正文在 `news_analyst` 输入处标记 `[UNTRUSTED_DATA]`；`tests/test_injection_protection.py`）
 13. ✅ LLM Judge（新闻/反证/综合，隔离调用）：`finabot/eval/llm_judge.py`（三个冻结 judge prompt，`litellm_glm_call(system_prompt=...)` 隔离，失败回退确定性评分）；`EvalRunner(enable_llm_judge=True)` 覆盖 news_reasoning/bear_counter/agent_synthesis 三维度；CLI `--judge` 开关；`tests/test_eval_llm_judge.py`。**专家校准流程（双人盲评 ≥100 trial）待续**
 14. ✅ 单 Agent 对照组（`build_graph(single_agent=True)`）+ ✅ 六组消融 harness 化（`finabot/eval/ablation.py`：single_agent/no_bear/no_structured/full/random_failure/conflicting_evidence，`run_ablations`/`compare_ablations`，环境变量隔离不泄漏；`tests/test_eval_ablation.py`）
