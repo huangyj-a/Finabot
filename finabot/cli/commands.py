@@ -202,12 +202,13 @@ def eval_run(
     task_id: str = typer.Option(None, "--task", help="Run only this task id"),
     trials: int = typer.Option(1, "--trials", help="Trials per task"),
     quality_threshold: float = typer.Option(75.0, "--threshold", help="Quality pass threshold"),
+    judge: bool = typer.Option(False, "--judge", help="启用隔离 LLM Judge（新闻/反证/综合三维度）"),
 ):
     """Run the evaluation harness over a task suite (评估实操报告落地).
 
     使用冻结数据（eval/fixtures/<task_id>/snapshot.json）离线运行真实图；
     无 fixture 的任务回退到实时数据。每任务 trials 次，输出指标汇总。
-    需要 LLM 凭据（.env）。
+    需要 LLM 凭据（.env）。--judge 时额外用隔离 LLM Judge 评新闻/反证/综合。
     """
     load_dotenv()
 
@@ -233,9 +234,9 @@ def eval_run(
         _safe_echo(f"套件 {suite} 无任务（{suite_dir}）", err=True)
         raise typer.Exit(1)
 
-    _safe_echo(f"开始评估：suite={suite} tasks={len(tasks)} trials={trials} threshold={quality_threshold:g}")
+    _safe_echo(f"开始评估：suite={suite} tasks={len(tasks)} trials={trials} threshold={quality_threshold:g} judge={judge}")
 
-    runner = EvalRunner(quality_threshold=quality_threshold)
+    runner = EvalRunner(quality_threshold=quality_threshold, enable_llm_judge=judge)
 
     async def _run_all():
         all_records = []

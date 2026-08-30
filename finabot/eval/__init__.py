@@ -6,6 +6,7 @@ Modules:
 - metrics: Pass@1 / Pass-all-N / severe-failure-rate etc.
 - frozen_data: offline frozen-data fixture factory
 - harness: trial runner that produces trace + report
+- llm_judge: isolated LLM judges for news/bear/synthesis dimensions
 """
 
 __all__ = [
@@ -14,4 +15,5 @@ __all__ = [
     "metrics",
     "frozen_data",
     "harness",
+    "llm_judge",
 ]

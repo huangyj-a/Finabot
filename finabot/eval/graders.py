@@ -148,6 +148,15 @@ def _internal_dimension_score(dimension: str, text: str) -> float:
     return min(hits / len(markers), 1.0)
 
 
+# 评估报告：新闻、反证、综合三个维度用隔离的 LLM Judge，其余 6 维用确定性评分器。
+LLM_JUDGE_DIMENSIONS = ("news_reasoning", "bear_counter", "agent_synthesis")
+
+
+def deterministic_dimension_scores(text: str) -> dict[str, float]:
+    """Deterministic marker-coverage scores for all 9 dimensions (0..1)."""
+    return {dim: _internal_dimension_score(dim, text) for dim in DIMENSION_WEIGHTS}
+
+
 def score_quality(
     text: str,
     ctx: dict[str, Any] | None = None,

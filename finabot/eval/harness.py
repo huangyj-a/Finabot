@@ -19,9 +19,11 @@ from typing import Any, Awaitable, Callable
 from finabot.eval.frozen_data import FrozenData, install_frozen_akshare, patch_akshare
 from finabot.eval.graders import (
     check_reference_calculations,
+    deterministic_dimension_scores,
     run_hard_gates,
     score_quality,
 )
+from finabot.eval.llm_judge import judge_quality_dimensions
 from finabot.eval.tasks import EvalTask
 
 RunOneFn = Callable[[EvalTask, dict[str, Any]], Awaitable[tuple[str, dict[str, Any]]]]
@@ -103,6 +105,7 @@ class TrialRecord:
     calc: dict[str, Any]
     future_leak: bool
     tool_errors: int
+    judge_scores: dict[str, float] = field(default_factory=dict)
     refusal_expected: bool = False
     refusal_given: bool = False
     refusal_appropriate: bool = True
@@ -122,6 +125,7 @@ class TrialRecord:
             "calc": self.calc,
             "future_leak": self.future_leak,
             "tool_errors": self.tool_errors,
+            "judge_scores": self.judge_scores,
             "refusal_expected": self.refusal_expected,
             "refusal_given": self.refusal_given,
             "refusal_appropriate": self.refusal_appropriate,
@@ -140,6 +144,7 @@ class EvalRunner:
         reports_root: str | os.PathLike[str] | None = None,
         run_one: RunOneFn | None = None,
         quality_threshold: float = 75.0,
+        enable_llm_judge: bool = False,
     ):
         self.fixtures_root = fixtures_root
         if reports_root is None:
@@ -149,6 +154,7 @@ class EvalRunner:
         self.reports_root = Path(reports_root)
         self.run_one = run_one or _default_run_one
         self.quality_threshold = quality_threshold
+        self.enable_llm_judge = enable_llm_judge
 
     async def run_task(
         self,
@@ -165,18 +171,33 @@ class EvalRunner:
             frozen = FrozenData(task, self.fixtures_root)
             ctx: dict[str, Any] = {"frozen": frozen, "monkeypatch": monkeypatch}
             final_text, extra = await self.run_one(task, ctx)
-            record = self._grade(task, run_id, trial, final_text, extra)
+            judge_scores: dict[str, float] = {}
+            if self.enable_llm_judge:
+                reports = (extra.get("trace") or {}).get("reports", {})
+                judge_scores = await judge_quality_dimensions(task.question, final_text, reports)
+            record = self._grade(task, run_id, trial, final_text, extra, judge_scores)
             records.append(record)
         self._write_report(run_id, task, records)
         return records
 
-    def _grade(self, task: EvalTask, run_id: str, trial: int, final_text: str, extra: dict[str, Any]) -> TrialRecord:
+    def _grade(
+        self,
+        task: EvalTask,
+        run_id: str,
+        trial: int,
+        final_text: str,
+        extra: dict[str, Any],
+        judge_scores: dict[str, float] | None = None,
+    ) -> TrialRecord:
         ctx = {"as_of": task.as_of}
         failed_gates = run_hard_gates(final_text, ctx)
         pass_gates = not failed_gates
 
         calc = check_reference_calculations(final_text, task.reference_calculations)
-        quality = score_quality(final_text, ctx)
+        dims = deterministic_dimension_scores(final_text)
+        judge_scores = judge_scores or {}
+        dims.update(judge_scores)  # LLM Judge 覆盖新闻/反证/综合三个维度
+        quality = score_quality(final_text, ctx, dimension_scores=dims)
         severe = bool(failed_gates)
 
         trace = extra.get("trace", {})
@@ -204,6 +225,7 @@ class EvalRunner:
             calc=calc,
             future_leak=future_leak,
             tool_errors=tool_errors,
+            judge_scores=judge_scores,
             refusal_expected=refusal_expected,
             refusal_given=refusal_given,
             refusal_appropriate=refusal_appropriate,
