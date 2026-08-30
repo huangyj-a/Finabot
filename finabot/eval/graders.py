@@ -48,9 +48,11 @@ def _internal_detect_fabrication_marker(text: str) -> bool:
     True fabrication detection needs the evidence registry / LLM judge;
     this deterministic check only catches explicit self-disclosures like
     "我编造了" or numeric claims that cite a source that cannot exist.
+    只匹配"编造了/虚构了/捏造了"等正向披露，避免把"不编造/无编造"等否定
+    表述误判为编造。
     """
     patterns = (
-        r"编造", r"虚构.{0,6}(数据|公告|价格|来源)", r"我随便写的",
+        r"编造了", r"虚构了", r"捏造了", r"胡编", r"我随便写的",
         r"没有.{0,4}(数据|来源).{0,8}(但|却|就).{0,6}(写了|给了|编)",
     )
     return any(re.search(pattern, text) for pattern in patterns)

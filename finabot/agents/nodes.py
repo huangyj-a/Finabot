@@ -442,6 +442,11 @@ async def call_llm_node(state: AgentState, single_agent: bool = False):
     raw_tool_calls = getattr(msg, "tool_calls", None) or []
     tool_calls = [call for call in (normalize_tool_call(call) for call in raw_tool_calls) if call is not None]
     content = getattr(msg, "content", "") or ""
+    # DeepSeek 思考模式：reasoning_content 需在后续轮次回传给 API，
+    # 否则多轮工具调用会被 BadRequest 拒绝。存入 additional_kwargs 以便 convert 回传。
+    reasoning_content = getattr(msg, "reasoning_content", None) or (
+        (getattr(msg, "additional_kwargs", None) or {}).get("reasoning_content")
+    )
 
     if force_final:
         # 预算耗尽：不再执行任何工具调用（含 GLM 以纯文本回退的 <tool_call> 标记），
@@ -462,9 +467,11 @@ async def call_llm_node(state: AgentState, single_agent: bool = False):
         if not call.get("id"):
             tool_calls[position] = {**call, "id": f"finabot_call_{position}"}
 
+    additional_kwargs = {"reasoning_content": reasoning_content} if reasoning_content else {}
     ai_msg = AIMessage(
         content=content,
-        tool_calls=tool_calls
+        tool_calls=tool_calls,
+        additional_kwargs=additional_kwargs,
     )
     # 运行级 LLM 调用计数（评估报告"预算"可观测性）：supervisor 每轮一次调用
     run_meta = dict(state.get("run_meta", {}) or {})
