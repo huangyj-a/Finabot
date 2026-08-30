@@ -16,7 +16,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Awaitable, Callable
 
-from finabot.eval.frozen_data import FrozenData, install_frozen_akshare, patch_akshare
+from finabot.eval.frozen_data import FrozenData, install_frozen_akshare, patch_akshare, shadow_mode_enabled
 from finabot.eval.graders import (
     check_fact_traceability,
     check_reference_calculations,
@@ -45,7 +45,11 @@ async def _default_run_one(task: EvalTask, ctx: dict[str, Any]) -> tuple[str, di
     monkeypatch = ctx.get("monkeypatch")
     frozen: FrozenData = ctx["frozen"]
     patcher = None
-    if monkeypatch is not None:
+    if shadow_mode_enabled():
+        # 只读实时影子：不拦截数据源，走实时公开数据，仅记录证据元数据
+        # （用于发现数据源漂移/接口异常，不能代替冻结集的可复现回归）。
+        patcher = None
+    elif monkeypatch is not None:
         install_frozen_akshare(frozen, monkeypatch)
     elif frozen.available:
         patcher = patch_akshare(frozen)

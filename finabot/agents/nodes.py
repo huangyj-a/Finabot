@@ -466,7 +466,10 @@ async def call_llm_node(state: AgentState, single_agent: bool = False):
         content=content,
         tool_calls=tool_calls
     )
-    return {"messages": [ai_msg]}
+    # 运行级 LLM 调用计数（评估报告"预算"可观测性）：supervisor 每轮一次调用
+    run_meta = dict(state.get("run_meta", {}) or {})
+    run_meta["llm_calls"] = int(run_meta.get("llm_calls", 0) or 0) + 1
+    return {"messages": [ai_msg], "run_meta": run_meta}
 
 
 async def call_tool_node(state: AgentState):
