@@ -73,6 +73,12 @@ _SUB_AGENT_NAMES = {
 }
 
 
+def _pipeline_timeout() -> float:
+    """hold_analysis_pipeline 是完整流水线（fetch + 5 次 LLM），耗时远超单个子代理，
+    需独立更长的超时（FINABOT_PIPELINE_TIMEOUT_SECONDS，默认 300s）。"""
+    return float(os.getenv("FINABOT_PIPELINE_TIMEOUT_SECONDS", "300"))
+
+
 async def _call_with_timeout(coro, name: str, timeout: float | None = None) -> str:
     """Wrap a sub-agent call with a configurable timeout.
 
@@ -181,6 +187,7 @@ async def _internal_invoke_sub_agent(name: str, state: AgentState, call: dict | 
                 debate_mode=debate_mode,
             ),
             name,
+            timeout=_pipeline_timeout(),
         )
         if isinstance(pipeline_result, str):
             # 超时占位：退化为降级结果，避免下游对字符串调用 .get()
@@ -191,12 +198,15 @@ async def _internal_invoke_sub_agent(name: str, state: AgentState, call: dict | 
                 "bull_report": placeholder,
                 "bear_report": placeholder,
                 "summary_report": placeholder,
+                "debate_report": placeholder,
                 "claims": [],
                 "risk_flags": [],
             }
         else:
             result = pipeline_result
         content = result.get("debate_report") if debate_mode else result["summary_report"]
+        if not content:
+            content = result.get("summary_report") or ""  # debate_report 缺失时回退 summary
         update: dict = {
             "fundamentals_report": result["fundamentals_report"],
             "news_report": result["news_report"],

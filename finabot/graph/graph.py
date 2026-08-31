@@ -4,6 +4,7 @@ from langgraph.graph import END, START, StateGraph
 from finabot.agents.nodes import (
     _call_with_timeout,
     _internal_latest_user_message,
+    _pipeline_timeout,
     call_llm_node as call_supervisor_node,
     call_tool_node,
 )
@@ -136,6 +137,7 @@ async def _internal_hold_analysis_pipeline_node(state: AgentState):
             debate_mode=debate_mode,
         ),
         "hold_analysis_pipeline",
+        timeout=_pipeline_timeout(),
     )
     if isinstance(pipeline_result, str):
         placeholder = pipeline_result
@@ -145,12 +147,15 @@ async def _internal_hold_analysis_pipeline_node(state: AgentState):
             "bull_report": placeholder,
             "bear_report": placeholder,
             "summary_report": placeholder,
+            "debate_report": placeholder,
             "claims": [],
             "risk_flags": [],
         }
     else:
         result = pipeline_result
     content = result.get("debate_report") if debate_mode else result["summary_report"]
+    if not content:
+        content = result.get("summary_report") or ""  # debate_report 缺失时回退 summary
     update: dict = {
         "messages": [AIMessage(content=str(content))],
         "fundamentals_report": result["fundamentals_report"],
