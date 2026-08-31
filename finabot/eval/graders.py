@@ -181,10 +181,28 @@ def _internal_dimension_score(dimension: str, text: str) -> float:
 # 评估报告：新闻、反证、综合三个维度用隔离的 LLM Judge，其余 6 维用确定性评分器。
 LLM_JUDGE_DIMENSIONS = ("news_reasoning", "bear_counter", "agent_synthesis")
 
+# 财务数据标记：命中即视为"金融分析题"；否则为"概念题"（复权/停牌/交易日等），
+# 财务数据类维度不适用，不应判 0。
+_FINANCIAL_DATA_MARKERS = re.compile(
+    r"(%|PE|PB|EPS|ROE|亿元|万元|收盘|涨跌|净值|市盈|市净|营收|净利|毛利率)"
+)
+
+
+def _internal_is_concept_answer(text: str) -> bool:
+    """无任何财务数据标记 → 视为概念题/知识题。"""
+    return not _FINANCIAL_DATA_MARKERS.search(text or "")
+
 
 def deterministic_dimension_scores(text: str) -> dict[str, float]:
-    """Deterministic marker-coverage scores for all 9 dimensions (0..1)."""
-    return {dim: _internal_dimension_score(dim, text) for dim in DIMENSION_WEIGHTS}
+    """Deterministic marker-coverage scores for all 9 dimensions (0..1).
+
+    概念题（无财务数据）的财务/数据/引用维度不适用，给中性满分避免误伤。
+    """
+    scores = {dim: _internal_dimension_score(dim, text) for dim in DIMENSION_WEIGHTS}
+    if _internal_is_concept_answer(text):
+        for dim in ("data_calc", "evidence_citation"):
+            scores[dim] = 1.0
+    return scores
 
 
 def score_quality(
